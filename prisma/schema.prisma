@@ -25,7 +25,6 @@ model User {
   id           String        @id @default(uuid())
   fullName     String
   email        String        @unique
-  gender       String
   phone        String?
   gender       String? // MALE | FEMALE — asked at registration, not required for existing accounts
   kunia        String? // Kunia / teknonym (e.g. "Umm-Ruslaan"), optional
