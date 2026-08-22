@@ -1,0 +1,339 @@
+// Kwegereza Islam Umuryango — database schema
+// Dev datasource is SQLite (zero-setup, file-based) so this schema is fully
+// testable right now. Switching to Postgres for production is a one-line change:
+//   datasource db { provider = "postgresql"; url = env("DATABASE_URL") }
+// Every model here already uses Postgres-safe types (uuid ids, enums as strings).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// NOTE: SQLite (this local dev datasource) has no native enum support, so
+// Role/status are validated strings here. On Postgres these become real enums:
+//   enum Role { ADMIN LEADER STUDENT GUEST }
+//   enum AccountStatus { PENDING ACTIVE INACTIVE SUSPENDED BLOCKED REJECTED }
+// Valid Role values:   ADMIN | LEADER | STUDENT | GUEST
+// Valid status values: PENDING | ACTIVE | INACTIVE | SUSPENDED | BLOCKED | REJECTED
+
+model User {
+  id           String        @id @default(uuid())
+  fullName     String
+  email        String        @unique
+  phone        String?
+  gender       String? // MALE | FEMALE — asked at registration, not required for existing accounts
+  kunia        String? // Kunia / teknonym (e.g. "Umm-Ruslaan"), optional
+  passwordHash String? // null for Google-only accounts (see googleId below)
+  googleId     String?       @unique // Google "sub" claim — set once, on first Google sign-in/registration
+  avatarUrl    String? // Google profile photo, if the account was created/linked via Google
+  role         String        @default("STUDENT")
+  status       String        @default("PENDING")
+
+  // Leaders are permission-driven, not automatically all-powerful.
+  // Stored as a JSON-encoded string array, e.g. ["student.approve","dars.create"].
+  permissions  String        @default("[]")
+
+  // Bumped whenever the account is blocked/suspended/password-changed —
+  // any previously-issued JWT with an older tokenVersion is rejected immediately.
+  tokenVersion Int           @default(0)
+
+  approvedById String?
+  approvedBy   User?         @relation("Approvals", fields: [approvedById], references: [id])
+  approvedAt   DateTime?
+  approvedUsers User[]       @relation("Approvals")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  auditLogsAsActor  AuditLog[] @relation("ActorLogs")
+  auditLogsAsTarget AuditLog[] @relation("TargetLogs")
+
+  conversations ConversationParticipant[]
+  messages      Message[]
+
+  hostedClasses        LiveClass[]
+  liveClassAttendances LiveClassAttendance[]
+
+  pushSubscriptions PushSubscription[]
+  notifications     Notification[]
+  notificationPreferences NotificationPreference[]
+
+  sessions       Session[]
+  activityEvents ActivityEvent[]
+
+  ifaidaPosts Ifaida[]
+
+  createdBooks         Book[]         @relation("BookCreatedBy")
+  createdDars          Dars[]         @relation("DarsCreatedBy")
+  updatedDars          Dars[]         @relation("DarsUpdatedBy")
+  createdAnnouncements Announcement[] @relation("AnnouncementAuthor")
+}
+
+// AUDIT = what management changed (separate from ACTIVITY = what a user did,
+// which arrives in a later phase alongside real usage tracking).
+model AuditLog {
+  id         String   @id @default(uuid())
+  actionType String // e.g. "student.approve", "student.block", "account.reject"
+  actorId    String
+  actor      User     @relation("ActorLogs", fields: [actorId], references: [id])
+  targetId   String?
+  target     User?    @relation("TargetLogs", fields: [targetId], references: [id])
+  meta       String   @default("{}") // JSON-encoded details
+  createdAt  DateTime @default(now())
+}
+
+// ===================== Ifaida / Dars content (Phase 6) =====================
+
+model Ifaida {
+  id          String    @id @default(uuid())
+  title       String
+  description String    @default("")
+  content     String    @default("") // sanitized rich-text HTML from the editor
+  authorId    String
+  author      User      @relation(fields: [authorId], references: [id])
+  category    String    @default("")
+  coverImage  String?
+  status      String    @default("DRAFT") // DRAFT | PUBLISHED
+  publishedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+// ===================== Analytics + activity tracking (Phase 11) =====================
+//
+// Honesty constraint carried over from the spec's "no fake numbers" rule:
+// this system only tracks things Kwegereza can actually measure right now —
+// login sessions, chat activity, live-class attendance, book downloads.
+// Video/audio watch-time, exam attempts, and Dars/Ifaida read-time are NOT
+// modeled here because those content types don't exist as real backend
+// entities yet (Phase 6 content management). Adding fabricated numbers for
+// them would violate the spec directly — they'll arrive honestly once that
+// phase is built.
+
+model Session {
+  id              String    @id @default(uuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id])
+  startedAt       DateTime  @default(now())
+  lastHeartbeatAt DateTime  @default(now())
+  endedAt         DateTime?
+  durationSeconds Int? // set once, when the session is explicitly closed
+}
+
+model ActivityEvent {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  type      String // LOGIN | LOGOUT | CHAT_OPEN | BOOK_DOWNLOAD | CLASS_JOIN | CLASS_LEAVE | PAGE_VIEW
+  meta      String   @default("{}")
+  createdAt DateTime @default(now())
+}
+
+// ===================== Push notifications (Phase 9) =====================
+
+model PushSubscription {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  createdAt DateTime @default(now())
+}
+
+model Notification {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id])
+  type      String // "student.approve" | "message" | "liveclass.started" | ...
+  title     String
+  body      String
+  url       String?
+  // One real-world event = one notification row, guaranteed by this unique
+  // constraint. If the same event tries to notify the same user twice (a
+  // retry, a duplicate socket emit), the second attempt is caught and
+  // discarded rather than creating a second row or a second push.
+  eventKey  String
+  read      Boolean   @default(false)
+  createdAt DateTime  @default(now())
+
+  @@unique([userId, eventKey])
+}
+
+// One row per (user, category). Absence of a row means "default: on" — a
+// brand-new user is fully subscribed until they explicitly opt out. ACCOUNT
+// and SYSTEM notification types deliberately have NO category here: notify.ts
+// never looks up a preference for them, so they can never be silenced, per
+// the spec ("do not allow users to disable critical security/account
+// notifications").
+model NotificationPreference {
+  id       String  @id @default(uuid())
+  userId   String
+  user     User    @relation(fields: [userId], references: [id])
+  category String // CHAT | DARS | IFAIDA | LIVE_CLASS | BOOKS | EXAMS | ANNOUNCEMENTS
+  enabled  Boolean @default(true) // master switch: off = no in-app row, no push, no realtime
+  push     Boolean @default(true) // finer-grained: still show in-app/bell, but skip OS push
+
+  @@unique([userId, category])
+}
+
+// ===================== Content management (Phase 12) =====================
+// Books, Darsat (audio/video lessons), Announcements, and Teacher profiles.
+// These back the sidebar items that were previously stubbed "Bizaza vuba"
+// (coming soon) and the public Ibitabo/Amatangazo/Abarimu pages that were
+// reading from static frontend data files.
+
+// A Teacher is a *display profile* — a name, kunia, photo, bio — not
+// necessarily a login account. Dars entries optionally reference one.
+model Teacher {
+  id        String   @id @default(uuid())
+  name      String
+  kunia     String? // teknonym, e.g. "Abu Ruslaan"
+  role      String   @default("") // e.g. "Aqida & Fiqh"
+  bio       String   @default("")
+  photo     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  darsat Dars[]
+}
+
+model Book {
+  id          String    @id @default(uuid())
+  title       String
+  description String    @default("")
+  author      String    @default("")
+  category    String    @default("")
+  fileUrl     String // the book file itself (PDF etc.) — object storage path/URL
+  coverImage  String?
+  status      String    @default("DRAFT") // DRAFT | PUBLISHED
+  downloads   Int       @default(0)
+  publishedAt DateTime?
+  createdById String
+  createdBy   User      @relation("BookCreatedBy", fields: [createdById], references: [id])
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model Dars {
+  id          String    @id @default(uuid())
+  title       String
+  type        String // AUDIO | VIDEO
+  description String    @default("")
+  thumbnail   String?
+  status      String    @default("DRAFT") // DRAFT | PUBLISHED
+  plays       Int       @default(0)
+  audio       String? // object storage path/URL — required when type = AUDIO
+  youtubeUrl  String? // optional external video link — used when type = VIDEO
+  teacherId   String?
+  teacher     Teacher?  @relation(fields: [teacherId], references: [id])
+  publishedAt DateTime?
+  createdById String
+  createdBy   User      @relation("DarsCreatedBy", fields: [createdById], references: [id])
+  updatedById String?
+  updatedBy   User?     @relation("DarsUpdatedBy", fields: [updatedById], references: [id])
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model Announcement {
+  id          String    @id @default(uuid())
+  title       String
+  body        String    @default("")
+  coverImage  String?
+  status      String    @default("DRAFT") // DRAFT | PUBLISHED
+  publishedAt DateTime?
+  authorId    String
+  author      User      @relation("AnnouncementAuthor", fields: [authorId], references: [id])
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+// A meaningful page-load, used for the public site's "Uyu munsi"/"Byose"
+// visit counters. One row per page view — cheap enough to write directly
+// (unlike heartbeats), and intentionally separate from ActivityEvent since
+// visits include anonymous/guest traffic that has no userId.
+model PageVisit {
+  id        String   @id @default(uuid())
+  path      String
+  visitorId String // anonymous client-generated id (localStorage), NOT a user id
+  createdAt DateTime @default(now())
+}
+
+// ===================== Live audio classrooms (Phase 10) =====================
+
+model LiveClass {
+  id           String    @id @default(uuid())
+  title        String
+  hostId       String
+  host         User      @relation(fields: [hostId], references: [id])
+  status       String    @default("SCHEDULED") // SCHEDULED | LIVE | ENDED
+  locked       Boolean   @default(false) // host-only: blocks new joins while true
+  scheduledFor DateTime? // set when the host books a future time instead of going live immediately
+  startedAt    DateTime?
+  endedAt      DateTime?
+  createdAt    DateTime  @default(now())
+
+  attendances LiveClassAttendance[]
+}
+
+model LiveClassAttendance {
+  id          String    @id @default(uuid())
+  liveClassId String
+  liveClass   LiveClass @relation(fields: [liveClassId], references: [id])
+  userId      String
+  user        User      @relation(fields: [userId], references: [id])
+  joinedAt    DateTime  @default(now())
+  leftAt      DateTime?
+}
+
+// ===================== Kwegereza Chat (Phase 7/8) =====================
+
+model Conversation {
+  id        String   @id @default(uuid())
+  isGroup   Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  participants ConversationParticipant[]
+  messages     Message[]
+}
+
+model ConversationParticipant {
+  id             String       @id @default(uuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  userId         String
+  user           User         @relation(fields: [userId], references: [id])
+  lastReadAt     DateTime?
+  joinedAt       DateTime     @default(now())
+
+  @@unique([conversationId, userId])
+}
+
+model Message {
+  id             String       @id @default(uuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  senderId       String
+  sender         User         @relation(fields: [senderId], references: [id])
+
+  // The idempotency key. Every outgoing message carries one, generated by the
+  // CLIENT. If the same (senderId, clientMessageId) pair is submitted twice —
+  // a network retry, a double-click, React StrictMode double-invoking a
+  // handler — the database's unique constraint makes a second row impossible.
+  // The server catches that unique-violation and returns the ORIGINAL row
+  // instead of creating a duplicate. This is what actually prevents the
+  // "one message shows up twice" bug at the source, rather than hiding it
+  // with client-side de-duplication.
+  clientMessageId String
+
+  body      String
+  deletedAt DateTime? // soft delete
+  createdAt DateTime  @default(now())
+
+  @@unique([senderId, clientMessageId])
+}
