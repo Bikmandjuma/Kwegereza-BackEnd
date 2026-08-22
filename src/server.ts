@@ -4,7 +4,7 @@ import { createApp } from "./app.js";
 import { initSocket } from "./realtime/socket.js";
 import { prisma } from "./utils/prisma.js";
 
-const PORT = Number(process.env.PORT) || 4000;
+const PORT = Number(process.env.PORT) || 8080;
 
 const app = createApp();
 const httpServer = createServer(app);
