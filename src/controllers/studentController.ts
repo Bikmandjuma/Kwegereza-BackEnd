@@ -7,6 +7,7 @@ import { endOpenSessions } from "../utils/activity.js";
 import { sendEmail } from "../utils/email.js";
 import { approvalEmail } from "../utils/emailTemplates.js";
 import { getFrontendUrl } from "../utils/email.js";
+import { isAdminTier } from "../utils/permissions.js";
 
 function publicUser(user: any) {
   return {
@@ -23,25 +24,25 @@ function publicUser(user: any) {
 }
 
 /**
- * A LEADER whose own gender is set only sees/manages students of the same
- * gender ("a female leader manages female students, a male leader manages
- * male students" — per spec). A LEADER with no gender set yet keeps today's
- * behavior (sees everyone) rather than silently locking them out of
- * students they were already managing — this is opt-in enforcement, not a
- * retroactive lockout, so an admin can set the leader's gender whenever is
- * convenient without an outage in between. ADMIN/SUPER_ADMIN are never
- * gender-scoped; they oversee both.
+ * Gender-scoping is a property of the ROLE TIER, not one specific role
+ * name — any non-admin-tier role (LEADER, or a brand new custom role an
+ * admin creates, e.g. "Women's Affairs Coordinator") gets the exact same
+ * behavior automatically: set your own gender, and you only see/manage
+ * students of that gender. A non-admin-tier actor with no gender set yet
+ * keeps today's behavior (sees everyone) rather than silently locking them
+ * out of students they were already managing — opt-in enforcement, not a
+ * retroactive lockout. ADMIN/SUPER_ADMIN are never gender-scoped.
  */
 function genderScopeWhere(actor: { role: string; gender: string | null }) {
-  if (actor.role === "LEADER" && actor.gender) {
+  if (!isAdminTier(actor.role) && actor.gender) {
     return { gender: actor.gender };
   }
   return {};
 }
 
-/** True if a LEADER actor is blocked from a specific target by gender scope. */
+/** True if a non-admin-tier actor is blocked from a specific target by gender scope. */
 function isOutOfGenderScope(actor: { role: string; gender: string | null }, target: { gender: string | null }) {
-  return actor.role === "LEADER" && Boolean(actor.gender) && target.gender !== actor.gender;
+  return !isAdminTier(actor.role) && Boolean(actor.gender) && target.gender !== actor.gender;
 }
 
 async function writeAudit(actorId: string, actionType: string, targetId: string, meta: Record<string, unknown> = {}) {

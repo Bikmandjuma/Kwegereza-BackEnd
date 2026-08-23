@@ -4,11 +4,13 @@ import {
   bulkUpdateUserStatus,
   createUserByAdmin,
   getPermissionCatalog,
+  getUserById,
   listAllUsers,
   unblockAnyUser,
   updateUserPermissions,
   updateUserRole,
 } from "../controllers/userManagementController.js";
+import { createRole, deleteRole, listRoles, updateRole } from "../controllers/roleController.js";
 import { authenticate, requireRole } from "../middleware/auth.js";
 
 const router = Router();
@@ -23,7 +25,12 @@ const router = Router();
 router.use(authenticate, requireRole("ADMIN", "SUPER_ADMIN"));
 
 router.get("/permissions-catalog", getPermissionCatalog);
+router.get("/roles", listRoles);
+router.post("/roles", createRole);
+router.patch("/roles/:id", updateRole);
+router.delete("/roles/:id", deleteRole);
 router.get("/users", listAllUsers);
+router.get("/users/:id", getUserById);
 // Directly creating an account (any role, active immediately, no approval
 // queue) is the one genuinely new "Super-Admin can add anyone" capability —
 // deliberately restricted to SUPER_ADMIN only, not shared with plain ADMIN.

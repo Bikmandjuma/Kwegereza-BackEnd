@@ -62,8 +62,10 @@ export const createUserByAdmin = asyncHandler(async (req: Request, res: Response
     sendError(res, 422, "Uzuza amazina, email, n'ijambo ry'ibanga.");
     return;
   }
-  if (!["STUDENT", "LEADER", "ADMIN"].includes(role)) {
-    sendError(res, 422, "Uruhare rugomba kuba STUDENT, LEADER, cyangwa ADMIN.");
+  const customRoles = await prisma.role.findMany({ where: { isSystem: false }, select: { key: true } });
+  const customRoleKeys = customRoles.map((r) => r.key);
+  if (!["STUDENT", "LEADER", "ADMIN", ...customRoleKeys].includes(role)) {
+    sendError(res, 422, "Uru ruhare ntiruzwi.");
     return;
   }
   if (String(password).length < 6) {
@@ -74,8 +76,8 @@ export const createUserByAdmin = asyncHandler(async (req: Request, res: Response
     sendError(res, 422, "Igitsina kigomba kuba MALE cyangwa FEMALE.");
     return;
   }
-  if (role === "LEADER" && !gender) {
-    sendError(res, 422, "Umuyobozi (LEADER) agomba kuba afite igitsina cyagenwe — bikoreshwa mu gucunga abanyeshuri.");
+  if ((role === "LEADER" || customRoleKeys.includes(role)) && !gender) {
+    sendError(res, 422, "Uyu mukoresha agomba kuba afite igitsina cyagenwe — bikoreshwa mu gucunga abanyeshuri.");
     return;
   }
 
@@ -86,7 +88,7 @@ export const createUserByAdmin = asyncHandler(async (req: Request, res: Response
   }
 
   const passwordHash = await bcrypt.hash(password, 12);
-  const safePermissions = role === "LEADER" ? sanitizePermissions(permissions) : [];
+  const safePermissions = role === "STUDENT" || role === "ADMIN" ? [] : sanitizePermissions(permissions);
 
   const user = await prisma.user.create({
     data: {
@@ -112,6 +114,15 @@ export const createUserByAdmin = asyncHandler(async (req: Request, res: Response
 // Whitelisted so `sort` can never become an arbitrary Prisma orderBy field
 // from user input — only columns actually shown in the table are sortable.
 const SORTABLE_FIELDS = new Set(["fullName", "email", "role", "status", "createdAt"]);
+
+export const getUserById = asyncHandler(async (req: Request, res: Response) => {
+  const user = await prisma.user.findUnique({ where: { id: req.params.id } });
+  if (!user) {
+    sendError(res, 404, "Umukoresha ntaboneka.");
+    return;
+  }
+  sendResponse(res, 200, publicUser(user));
+});
 
 export const listAllUsers = asyncHandler(async (req: Request, res: Response) => {
   const page = Math.max(1, Number(req.query.page) || 1);
@@ -202,17 +213,26 @@ export const bulkUpdateUserStatus = asyncHandler(async (req: Request, res: Respo
 // account that currently is — or is becoming — ADMIN.
 export const updateUserRole = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
-  const { role } = req.body ?? {};
+  const { role, permissions: explicitPermissions } = req.body ?? {};
   const actorIsSuperAdmin = req.user!.role === "SUPER_ADMIN";
-  const validTargets = actorIsSuperAdmin ? ["STUDENT", "LEADER", "ADMIN"] : ["STUDENT", "LEADER"];
+
+  // Any non-system custom role (Secretariat, Accountant, Women's Affairs
+  // Coordinator, ...) is a valid target the exact same way LEADER is — the
+  // Role table is the source of truth for "what custom roles exist", not a
+  // hardcoded list here.
+  const customRoles = await prisma.role.findMany({ where: { isSystem: false }, select: { key: true, defaultPermissions: true } });
+  const customRoleKeys = customRoles.map((r) => r.key);
+  const validTargets = actorIsSuperAdmin
+    ? ["STUDENT", "LEADER", "ADMIN", ...customRoleKeys]
+    : ["STUDENT", "LEADER", ...customRoleKeys];
 
   if (!validTargets.includes(role)) {
     sendError(
       res,
       422,
       actorIsSuperAdmin
-        ? "Uruhare rushobora kuba STUDENT, LEADER, cyangwa ADMIN."
-        : "Uruhare rushobora kuba STUDENT cyangwa LEADER gusa."
+        ? "Uru ruhare ntiruzwi. Reba urutonde rw'uburenganzira rwemewe."
+        : "Uru ruhare ntiruzwi, cyangwa rugenwa gusa na Super-Admin."
     );
     return;
   }
@@ -234,19 +254,30 @@ export const updateUserRole = asyncHandler(async (req: Request, res: Response) =
     sendError(res, 403, "Ntushobora guhindura konti ya Admin.");
     return;
   }
-  if (role === "LEADER" && !target.gender) {
-    sendError(res, 422, "Uyu mukoresha agomba kuba afite igitsina cyagenwe mbere yo kuba Umuyobozi.");
+  const isNonAdminRoleChange = role === "LEADER" || customRoleKeys.includes(role);
+  if (isNonAdminRoleChange && !target.gender) {
+    sendError(res, 422, "Uyu mukoresha agomba kuba afite igitsina cyagenwe mbere yo guhabwa uru ruhare.");
     return;
   }
 
   const data: any = { role };
-  // Demoting a leader back to student clears any permissions they held —
-  // a fresh promotion later starts from zero, never inherits stale grants.
-  // Same logic promoting to ADMIN: ADMIN's power is role-based (see
-  // hasPermission), not permission-list-based, so stale leader grants are
-  // meaningless noise on an admin account — clear them.
-  if ((role === "STUDENT" && target.role === "LEADER") || role === "ADMIN") {
+  if (role === "STUDENT" || role === "ADMIN") {
+    // STUDENT has no use for a leftover permission list; ADMIN's power is
+    // role-based (see hasPermission), not permission-list-based — either
+    // way, a stale list here is meaningless noise. Explicit overrides are
+    // not honored for these two roles, by design.
     data.permissions = "[]";
+  } else if (explicitPermissions !== undefined) {
+    // The new combined "assign role + set permissions" flow sends both in
+    // one request — honor exactly what was checked, not a role default.
+    data.permissions = JSON.stringify(sanitizePermissions(explicitPermissions));
+  } else if (role !== target.role) {
+    // Switching to a genuinely different role with no explicit permission
+    // list given — start from that role's own defaults rather than
+    // silently inheriting whatever permissions happened to be left over
+    // from an unrelated previous role.
+    const roleDefaults = customRoles.find((r) => r.key === role)?.defaultPermissions;
+    data.permissions = roleDefaults ?? "[]";
   }
 
   const updated = await prisma.user.update({ where: { id }, data });

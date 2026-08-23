@@ -78,6 +78,23 @@ model User {
   examAttempts  ExamAttempt[] @relation("ExamAttempts")
 }
 
+// Custom roles (Secretariat, Accountant, Women's Affairs Coordinator, etc.) —
+// User.role can hold any Role.key, not just the four built-in ones
+// (STUDENT/LEADER/ADMIN/SUPER_ADMIN). ADMIN/SUPER_ADMIN stay hardcoded,
+// role-based, full-access tiers (see hasPermission) and are never created
+// or edited through this table — every OTHER role, built-in or custom, is
+// purely permission-list-driven, so a brand new role works correctly the
+// moment it's created with no code changes anywhere else.
+model Role {
+  id                 String   @id @default(uuid())
+  key                String   @unique // e.g. "SECRETARIAT" — this is the actual value stored in User.role
+  label              String // display name, e.g. "Sekeretariya"
+  defaultPermissions String   @default("[]") // JSON array — applied when a user is first assigned this role
+  isSystem           Boolean  @default(false) // true for the 4 built-ins; seeded once, never deletable
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
 // AUDIT = what management changed (separate from ACTIVITY = what a user did,
 // which arrives in a later phase alongside real usage tracking).
 model AuditLog {
