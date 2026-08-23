@@ -17,15 +17,9 @@ async function main() {
       fullName: "Umuyobozi Mukuru",
       email: adminEmail,
       passwordHash,
-      role: "ADMIN",
+      role: "SUPER_ADMIN",
       status: "ACTIVE",
-      permissions: JSON.stringify([
-        "student.view",
-        "student.approve",
-        "student.block",
-        "leader.view",
-        "leader.create",
-      ]),
+      permissions: JSON.stringify([]), // SUPER_ADMIN bypasses permission checks entirely by role — see hasPermission()
     },
   });
 
@@ -38,6 +32,7 @@ async function main() {
       passwordHash: leaderHash,
       role: "LEADER",
       status: "ACTIVE",
+      gender: "MALE", // leaders need a gender set for gender-scoped student management to apply — see genderScopeWhere()
       permissions: JSON.stringify([
         "student.view",
         "student.approve",

@@ -8,7 +8,16 @@ export function parsePermissions(raw: string): string[] {
 }
 
 export function hasPermission(role: string, permissionsJson: string, permission: string): boolean {
-  // Admin is always authoritative — everyone else is permission-driven only.
-  if (role === "ADMIN") return true;
+  // Both admin tiers are always authoritative — everyone else (LEADER) is
+  // permission-driven only. SUPER_ADMIN sits above ADMIN (can manage ADMIN
+  // accounts themselves — see userManagementController) but has identical
+  // blanket access to every permission-gated feature.
+  if (role === "ADMIN" || role === "SUPER_ADMIN") return true;
   return parsePermissions(permissionsJson).includes(permission);
+}
+
+/** Shared by any controller that needs an "author/host, OR admin-tier
+ * override" check — the single place that defines what "admin-tier" means. */
+export function isAdminTier(role: string): boolean {
+  return role === "ADMIN" || role === "SUPER_ADMIN";
 }

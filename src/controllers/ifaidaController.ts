@@ -3,6 +3,7 @@ import { asyncHandler } from "../middleware/asyncHandler.js";
 import { sendError, sendResponse } from "../utils/apiResponse.js";
 import { prisma } from "../utils/prisma.js";
 import { sanitizeRichText } from "../utils/sanitize.js";
+import { isAdminTier } from "../utils/permissions.js";
 
 const WORDS_PER_MINUTE = 200;
 
@@ -87,7 +88,7 @@ export const getMine = asyncHandler(async (req: Request, res: Response) => {
     sendError(res, 404, "Iyi nyandiko ntiboneka.");
     return;
   }
-  if (post.authorId !== req.user!.id && req.user!.role !== "ADMIN") {
+  if (post.authorId !== req.user!.id && !isAdminTier(req.user!.role)) {
     sendError(res, 403, "Ntabwo wemerewe kureba iyi nyandiko.");
     return;
   }
@@ -115,7 +116,7 @@ export const updateIfaida = asyncHandler(async (req: Request, res: Response) => 
     sendError(res, 404, "Iyi nyandiko ntiboneka.");
     return;
   }
-  if (post.authorId !== req.user!.id && req.user!.role !== "ADMIN") {
+  if (post.authorId !== req.user!.id && !isAdminTier(req.user!.role)) {
     sendError(res, 403, "Ntabwo wemerewe guhindura iyi nyandiko.");
     return;
   }
@@ -138,7 +139,7 @@ export const deleteIfaida = asyncHandler(async (req: Request, res: Response) => 
     sendError(res, 404, "Iyi nyandiko ntiboneka.");
     return;
   }
-  if (post.authorId !== req.user!.id && req.user!.role !== "ADMIN") {
+  if (post.authorId !== req.user!.id && !isAdminTier(req.user!.role)) {
     sendError(res, 403, "Ntabwo wemerewe gusiba iyi nyandiko.");
     return;
   }
@@ -152,7 +153,7 @@ export const publishIfaida = asyncHandler(async (req: Request, res: Response) =>
     sendError(res, 404, "Iyi nyandiko ntiboneka.");
     return;
   }
-  if (post.authorId !== req.user!.id && req.user!.role !== "ADMIN") {
+  if (post.authorId !== req.user!.id && !isAdminTier(req.user!.role)) {
     sendError(res, 403, "Ntabwo wemerewe gutangaza iyi nyandiko.");
     return;
   }
@@ -175,7 +176,7 @@ export const unpublishIfaida = asyncHandler(async (req: Request, res: Response) 
     sendError(res, 404, "Iyi nyandiko ntiboneka.");
     return;
   }
-  if (post.authorId !== req.user!.id && req.user!.role !== "ADMIN") {
+  if (post.authorId !== req.user!.id && !isAdminTier(req.user!.role)) {
     sendError(res, 403, "Ntabwo wemerewe guhagarika iyi nyandiko.");
     return;
   }

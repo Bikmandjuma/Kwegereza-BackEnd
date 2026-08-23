@@ -1,3 +1,4 @@
+import bcrypt from "bcryptjs";
 import type { Request, Response } from "express";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { sendError, sendResponse } from "../utils/apiResponse.js";
@@ -38,8 +39,74 @@ function pingAccountUpdated(userId: string) {
   getIo()?.to(`user:${userId}`).emit("account:updated");
 }
 
+const VALID_GENDERS = new Set(["MALE", "FEMALE"]);
+
 export const getPermissionCatalog = asyncHandler(async (_req: Request, res: Response) => {
   sendResponse(res, 200, PERMISSION_CATALOG);
+});
+
+/**
+ * The one genuinely new "Super-Admin can add anyone" capability — creates an
+ * account directly as ACTIVE, skipping the PENDING approval queue entirely
+ * (a super-admin manually creating someone doesn't need to review their own
+ * action the way a self-registration does). Can mint STUDENT, LEADER, or
+ * ADMIN accounts. Minting another SUPER_ADMIN is deliberately NOT exposed
+ * here or anywhere in the API — that stays a seed/direct-database action
+ * only, to keep the blast radius of a compromised super-admin session or a
+ * UI bug from ever reaching the very top tier.
+ */
+export const createUserByAdmin = asyncHandler(async (req: Request, res: Response) => {
+  const { fullName, email, password, role, gender, phone, kunia, permissions } = req.body ?? {};
+
+  if (!fullName?.trim() || !email?.trim() || !password) {
+    sendError(res, 422, "Uzuza amazina, email, n'ijambo ry'ibanga.");
+    return;
+  }
+  if (!["STUDENT", "LEADER", "ADMIN"].includes(role)) {
+    sendError(res, 422, "Uruhare rugomba kuba STUDENT, LEADER, cyangwa ADMIN.");
+    return;
+  }
+  if (String(password).length < 6) {
+    sendError(res, 422, "Ijambo ry'ibanga rigomba kuba rifite byibura inyuguti 6.");
+    return;
+  }
+  if (gender && !VALID_GENDERS.has(String(gender))) {
+    sendError(res, 422, "Igitsina kigomba kuba MALE cyangwa FEMALE.");
+    return;
+  }
+  if (role === "LEADER" && !gender) {
+    sendError(res, 422, "Umuyobozi (LEADER) agomba kuba afite igitsina cyagenwe — bikoreshwa mu gucunga abanyeshuri.");
+    return;
+  }
+
+  const existing = await prisma.user.findUnique({ where: { email: String(email).toLowerCase() } });
+  if (existing) {
+    sendError(res, 422, "Iyi email isanzwe ifite konti.");
+    return;
+  }
+
+  const passwordHash = await bcrypt.hash(password, 12);
+  const safePermissions = role === "LEADER" ? sanitizePermissions(permissions) : [];
+
+  const user = await prisma.user.create({
+    data: {
+      fullName: fullName.trim(),
+      email: String(email).toLowerCase(),
+      phone: phone ? String(phone) : null,
+      gender: gender ? String(gender) : null,
+      kunia: kunia?.trim() ? String(kunia).trim() : null,
+      passwordHash,
+      role,
+      status: "ACTIVE",
+      permissions: JSON.stringify(safePermissions),
+      approvedById: req.user!.id,
+      approvedAt: new Date(),
+    },
+  });
+
+  await writeAudit(req.user!.id, "user.create_by_super_admin", user.id, { role });
+
+  sendResponse(res, 201, { user: publicUser(user) }, "Umukoresha yashyizweho neza.");
 });
 
 // Whitelisted so `sort` can never become an arbitrary Prisma orderBy field
@@ -99,8 +166,13 @@ export const bulkUpdateUserStatus = asyncHandler(async (req: Request, res: Respo
     return;
   }
 
-  const targets = await prisma.user.findMany({ where: { id: { in: ids }, role: { not: "ADMIN" } } });
-  const targetIds = targets.map((t) => t.id);
+  const targets = await prisma.user.findMany({
+    where: {
+      id: { in: ids },
+      role: { notIn: req.user!.role === "SUPER_ADMIN" ? ["SUPER_ADMIN"] : ["ADMIN", "SUPER_ADMIN"] },
+    },
+  });
+  const targetIds = targets.map((t) => t.id).filter((tid) => tid !== req.user!.id);
   if (targetIds.length === 0) {
     sendResponse(res, 200, { updated: 0 }, "Nta mukoresha wahinduwe.");
     return;
@@ -124,16 +196,24 @@ export const bulkUpdateUserStatus = asyncHandler(async (req: Request, res: Respo
   sendResponse(res, 200, { updated: targetIds.length }, "Byahinduwe neza.");
 });
 
-// Promote a STUDENT to LEADER, or demote a LEADER back to STUDENT. Deliberately
-// cannot touch ADMIN accounts through this endpoint — creating or modifying
-// admins is not exposed in the UI at all, on purpose, to avoid an accidental
-// or exploited privilege-escalation path through casual admin-panel clicks.
+// Promote/demote between STUDENT and LEADER (ADMIN actor), or additionally
+// to/from ADMIN (SUPER_ADMIN actor only). Nobody can touch a SUPER_ADMIN
+// account through this endpoint, and only a SUPER_ADMIN can touch an
+// account that currently is — or is becoming — ADMIN.
 export const updateUserRole = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
   const { role } = req.body ?? {};
+  const actorIsSuperAdmin = req.user!.role === "SUPER_ADMIN";
+  const validTargets = actorIsSuperAdmin ? ["STUDENT", "LEADER", "ADMIN"] : ["STUDENT", "LEADER"];
 
-  if (!["STUDENT", "LEADER"].includes(role)) {
-    sendError(res, 422, "Uruhare rushobora kuba STUDENT cyangwa LEADER gusa.");
+  if (!validTargets.includes(role)) {
+    sendError(
+      res,
+      422,
+      actorIsSuperAdmin
+        ? "Uruhare rushobora kuba STUDENT, LEADER, cyangwa ADMIN."
+        : "Uruhare rushobora kuba STUDENT cyangwa LEADER gusa."
+    );
     return;
   }
   if (id === req.user!.id) {
@@ -146,15 +226,26 @@ export const updateUserRole = asyncHandler(async (req: Request, res: Response) =
     sendError(res, 404, "Umukoresha ntaboneka.");
     return;
   }
-  if (target.role === "ADMIN") {
+  if (target.role === "SUPER_ADMIN") {
+    sendError(res, 403, "Ntushobora guhindura uruhare rwa Super-Admin.");
+    return;
+  }
+  if (target.role === "ADMIN" && !actorIsSuperAdmin) {
     sendError(res, 403, "Ntushobora guhindura konti ya Admin.");
+    return;
+  }
+  if (role === "LEADER" && !target.gender) {
+    sendError(res, 422, "Uyu mukoresha agomba kuba afite igitsina cyagenwe mbere yo kuba Umuyobozi.");
     return;
   }
 
   const data: any = { role };
   // Demoting a leader back to student clears any permissions they held —
   // a fresh promotion later starts from zero, never inherits stale grants.
-  if (role === "STUDENT" && target.role === "LEADER") {
+  // Same logic promoting to ADMIN: ADMIN's power is role-based (see
+  // hasPermission), not permission-list-based, so stale leader grants are
+  // meaningless noise on an admin account — clear them.
+  if ((role === "STUDENT" && target.role === "LEADER") || role === "ADMIN") {
     data.permissions = "[]";
   }
 
@@ -165,10 +256,12 @@ export const updateUserRole = asyncHandler(async (req: Request, res: Response) =
   await notifyUser({
     userId: id,
     type: "account.role_changed",
-    title: role === "LEADER" ? "Wabaye Umuyobozi!" : "Uruhare rwawe rwahindutse",
+    title: role === "LEADER" ? "Wabaye Umuyobozi!" : role === "ADMIN" ? "Wabaye Admin!" : "Uruhare rwawe rwahindutse",
     body:
       role === "LEADER"
         ? "Ubu ufite uruhare rw'Umuyobozi kuri Kwegereza. Reba uburenganzira wahawe."
+        : role === "ADMIN"
+        ? "Ubu ufite uruhare rwa Admin kuri Kwegereza."
         : "Uruhare rwawe rwagarutse kuri Umunyeshuri.",
     url: "/",
     eventKey: `role-change-${id}-${Date.now()}`,
@@ -212,18 +305,26 @@ export const updateUserPermissions = asyncHandler(async (req: Request, res: Resp
   sendResponse(res, 200, { user: publicUser(updated) }, "Uburenganzira bwahinduwe neza.");
 });
 
-// Generalized block/unblock/reject — works for STUDENT or LEADER, unlike the
-// student-only endpoints in studentController. This whole controller is
-// mounted behind requireRole("ADMIN"), so no separate permission check is
-// needed here: an Admin can always do this, by design.
+// Generalized block/unblock/reject — works for STUDENT or LEADER, and (for a
+// SUPER_ADMIN actor only) ADMIN too. This whole controller is mounted behind
+// requireRole("ADMIN", "SUPER_ADMIN"), but a plain ADMIN still can never
+// touch another ADMIN or a SUPER_ADMIN account — that extra guard lives here.
 export const blockAnyUser = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
+  if (id === req.user!.id) {
+    sendError(res, 422, "Ntushobora guhagarika konti yawe ubwawe.");
+    return;
+  }
   const target = await prisma.user.findUnique({ where: { id } });
   if (!target) {
     sendError(res, 404, "Umukoresha ntaboneka.");
     return;
   }
-  if (target.role === "ADMIN") {
+  if (target.role === "SUPER_ADMIN") {
+    sendError(res, 403, "Ntushobora guhagarika konti ya Super-Admin.");
+    return;
+  }
+  if (target.role === "ADMIN" && req.user!.role !== "SUPER_ADMIN") {
     sendError(res, 403, "Ntushobora guhagarika konti ya Admin.");
     return;
   }

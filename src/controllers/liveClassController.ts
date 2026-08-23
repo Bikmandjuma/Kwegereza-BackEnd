@@ -5,6 +5,9 @@ import { prisma } from "../utils/prisma.js";
 import { endLiveClass } from "../realtime/liveClass.js";
 import { getIo } from "../realtime/ioInstance.js";
 import { notifyAllActiveUsersExcept } from "../utils/notify.js";
+import { isAdminTier } from "../utils/permissions.js";
+import { sendEmailBatch, getFrontendUrl } from "../utils/email.js";
+import { liveClassEmail } from "../utils/emailTemplates.js";
 
 function publicClass(c: any) {
   return {
@@ -33,6 +36,24 @@ async function announceLive(liveClass: any, hostId: string) {
     url: `/live-class/${liveClass.id}`,
     eventKey: `liveclass-started-${liveClass.id}`,
   }));
+
+  // Same "every active user except the host, and status=ACTIVE already
+  // excludes blocked/pending/suspended/rejected accounts" audience as the
+  // in-app/push notification above — email is a separate channel, not a
+  // separate audience rule. Fire-and-forget: a slow or failed email batch
+  // must never delay the class actually going live for everyone already
+  // connected via the realtime event.
+  prisma.user
+    .findMany({ where: { status: "ACTIVE", id: { not: hostId } }, select: { email: true } })
+    .then((recipients: { email: string }[]) => {
+      const hostName = liveClass.host?.fullName ?? "Umuyobozi";
+      const joinUrl = `${getFrontendUrl()}/live-class/${liveClass.id}`;
+      return sendEmailBatch(
+        recipients.map((r) => r.email),
+        (to) => ({ to, ...liveClassEmail(liveClass.title, hostName, joinUrl) })
+      );
+    })
+    .catch((err) => console.error("[liveClassController] live-class email batch failed:", err));
 }
 
 export const createLiveClass = asyncHandler(async (req: Request, res: Response) => {
@@ -85,7 +106,7 @@ export const startScheduledLiveClass = asyncHandler(async (req: Request, res: Re
     sendError(res, 404, "Isomo ntaboneka.");
     return;
   }
-  if (liveClass.hostId !== req.user!.id && req.user!.role !== "ADMIN") {
+  if (liveClass.hostId !== req.user!.id && !isAdminTier(req.user!.role)) {
     sendError(res, 403, "Gusa uwateganyije isomo cyangwa admin ni bo bashobora kuritangira.");
     return;
   }
@@ -145,7 +166,7 @@ export const endLiveClassRoute = asyncHandler(async (req: Request, res: Response
     sendError(res, 404, "Isomo ntaboneka.");
     return;
   }
-  if (liveClass.hostId !== req.user!.id && req.user!.role !== "ADMIN") {
+  if (liveClass.hostId !== req.user!.id && !isAdminTier(req.user!.role)) {
     sendError(res, 403, "Gusa uwatangiye isomo cyangwa admin ni bo bashobora kurihagarika.");
     return;
   }
