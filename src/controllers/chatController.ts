@@ -47,6 +47,60 @@ async function findOrCreateDirectConversation(userAId: string, userBId: string) 
   });
 }
 
+const VALID_GENDERS = new Set(["MALE", "FEMALE"]);
+
+/**
+ * Returns the caller's own-gender room, creating it the very first time
+ * anyone of that gender ever asks for it, and adding the caller as a
+ * participant if they aren't one yet (lazy, self-healing membership — a
+ * user becomes a member the first time they open chat, not via any batch
+ * backfill job that has to be kept in sync with registrations/approvals/
+ * gender changes). A user with no gender set has no gender room at all.
+ */
+export const getMyGenderRoom = asyncHandler(async (req: Request, res: Response) => {
+  const gender = req.user!.gender;
+  if (!gender || !VALID_GENDERS.has(gender)) {
+    sendError(res, 422, "Nta gitsina cyagenwe kuri konti yawe — saba ubuyobozi kukibashyiraho.");
+    return;
+  }
+
+  let room = await prisma.conversation.findUnique({
+    where: { kind_genderScope: { kind: "GENDER_ROOM", genderScope: gender } },
+  });
+  if (!room) {
+    // Two people of the same gender opening chat for the very first time,
+    // at the exact same moment, could both reach this branch — the unique
+    // index on (kind, genderScope) is the real guarantee, not this check;
+    // if we lose the race, we just fetch the winner's row instead of
+    // crashing the request.
+    try {
+      room = await prisma.conversation.create({
+        data: { isGroup: true, kind: "GENDER_ROOM", genderScope: gender },
+      });
+    } catch {
+      room = await prisma.conversation.findUnique({
+        where: { kind_genderScope: { kind: "GENDER_ROOM", genderScope: gender } },
+      });
+    }
+  }
+  if (!room) {
+    sendError(res, 500, "Habaye ikibazo mu gushaka icyumba cyawe.");
+    return;
+  }
+
+  await prisma.conversationParticipant.upsert({
+    where: { conversationId_userId: { conversationId: room.id, userId: req.user!.id } },
+    update: {},
+    create: { conversationId: room.id, userId: req.user!.id },
+  });
+
+  sendResponse(res, 200, {
+    id: room.id,
+    gender,
+    label: gender === "FEMALE" ? "Icyumba cy'Abagore" : "Icyumba cy'Abagabo",
+  });
+});
+
 export const startConversation = asyncHandler(async (req: Request, res: Response) => {
   const { withUserId } = req.body ?? {};
   if (!withUserId) {
@@ -74,37 +128,78 @@ export const startConversation = asyncHandler(async (req: Request, res: Response
 });
 
 export const listConversations = asyncHandler(async (req: Request, res: Response) => {
-  const participations = await prisma.conversationParticipant.findMany({
+  const myParticipations = await prisma.conversationParticipant.findMany({
     where: { userId: req.user!.id },
-    include: {
-      conversation: {
+    select: { conversationId: true, lastReadAt: true, conversation: { select: { kind: true, genderScope: true } } },
+  });
+
+  const dmIds = myParticipations.filter((p) => p.conversation.kind !== "GENDER_ROOM").map((p) => p.conversationId);
+  const genderRoom = myParticipations.find((p) => p.conversation.kind === "GENDER_ROOM");
+
+  // Full participant+user rows are only ever fetched for 1:1 DMs, where
+  // there are exactly two — never for the gender room, which could have
+  // hundreds of members and only needs a headcount here, not every name.
+  const dmConversations = dmIds.length
+    ? await prisma.conversation.findMany({
+        where: { id: { in: dmIds } },
         include: {
           participants: { include: { user: true } },
           messages: { orderBy: { createdAt: "desc" }, take: 1, include: { sender: true } },
         },
-      },
-    },
-  });
+      })
+    : [];
 
-  const result = participations.map((p) => {
-    const conv = p.conversation;
+  const result: Array<{
+    id: string;
+    isGenderRoom: boolean;
+    genderRoomLabel: string | null;
+    participantCount: number | undefined;
+    otherUser: { id: string; fullName: string; role: string } | null;
+    lastMessage: ReturnType<typeof publicMessage> | null;
+  }> = dmConversations.map((conv) => {
     const other = conv.participants.find((x) => x.userId !== req.user!.id)?.user;
     const last = conv.messages[0];
     return {
       id: conv.id,
+      isGenderRoom: false,
+      genderRoomLabel: null,
+      participantCount: undefined,
       otherUser: other ? { id: other.id, fullName: other.fullName, role: other.role } : null,
       lastMessage: last ? publicMessage(last) : null,
-      unread: p.lastReadAt ? undefined : undefined, // computed properly once we add counts in a later pass
     };
   });
 
-  result.sort((a, b) => {
+  if (genderRoom) {
+    const [participantCount, lastMessage] = await Promise.all([
+      prisma.conversationParticipant.count({ where: { conversationId: genderRoom.conversationId } }),
+      prisma.message.findFirst({
+        where: { conversationId: genderRoom.conversationId },
+        orderBy: { createdAt: "desc" },
+        include: { sender: true },
+      }),
+    ]);
+    result.unshift({
+      id: genderRoom.conversationId,
+      isGenderRoom: true,
+      genderRoomLabel: genderRoom.conversation.genderScope === "FEMALE" ? "Icyumba cy'Abagore" : "Icyumba cy'Abagabo",
+      participantCount,
+      otherUser: null,
+      lastMessage: lastMessage ? publicMessage(lastMessage) : null,
+    });
+  }
+
+  // The gender room is pinned to the top (already unshifted above) — a
+  // standing community space, not a conversation that should get buried
+  // under whichever 1:1 DM happened to receive the most recent message.
+  // Everything after it sorts by recency as before.
+  const [pinned, rest] = [result[0]?.isGenderRoom ? [result[0]] : [], result[0]?.isGenderRoom ? result.slice(1) : result];
+  rest.sort((a, b) => {
     const at = a.lastMessage?.createdAt ?? 0;
     const bt = b.lastMessage?.createdAt ?? 0;
     return new Date(bt).getTime() - new Date(at).getTime();
   });
 
-  sendResponse(res, 200, result);
+  sendResponse(res, 200, [...pinned, ...rest]);
 });
 
 export const listMessages = asyncHandler(async (req: Request, res: Response) => {

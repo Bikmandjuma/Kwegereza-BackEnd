@@ -1,5 +1,6 @@
 import { Router } from "express";
 import {
+  getMyGenderRoom,
   listConversations,
   listMessages,
   markConversationRead,
@@ -11,6 +12,7 @@ const router = Router();
 
 router.use(authenticate); // any ACTIVE account, not permission-gated — chat is a baseline feature
 
+router.get("/gender-room", getMyGenderRoom);
 router.post("/start", startConversation);
 router.get("/conversations", listConversations);
 router.get("/conversations/:id/messages", listMessages);

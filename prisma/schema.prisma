@@ -216,6 +216,8 @@ model Book {
   coverImage  String?
   status      String    @default("DRAFT") // DRAFT | PUBLISHED
   downloads   Int       @default(0)
+  views       Int       @default(0) // opened in the in-browser reader — separate from downloads
+  shares      Int       @default(0)
   publishedAt DateTime?
   createdById String
   createdBy   User      @relation("BookCreatedBy", fields: [createdById], references: [id])
@@ -388,10 +390,21 @@ model LiveClassAttendance {
 model Conversation {
   id        String   @id @default(uuid())
   isGroup   Boolean  @default(false)
-  createdAt DateTime @default(now())
+  // "DM" (default, existing 1:1 behavior, unchanged) | "GENDER_ROOM" (one
+  // shared room per gender — see chatController.ts getOrCreateGenderRoom).
+  // genderScope is null for every DM and "MALE"/"FEMALE" for a gender room.
+  // MySQL doesn't treat multiple NULLs as duplicates under a unique index,
+  // so this constraint quietly does nothing to the (many) null-genderScope
+  // DM rows while still guaranteeing at most one real room per gender, even
+  // under a race between two people opening chat for the first time at once.
+  kind        String   @default("DM")
+  genderScope String?
+  createdAt   DateTime @default(now())
 
   participants ConversationParticipant[]
   messages     Message[]
+
+  @@unique([kind, genderScope])
 }
 
 model ConversationParticipant {

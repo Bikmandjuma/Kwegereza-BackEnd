@@ -15,6 +15,8 @@ function publicBook(b: any) {
     coverImage: b.coverImage,
     status: b.status,
     downloads: b.downloads,
+    views: b.views,
+    shares: b.shares,
     publishedAt: b.publishedAt,
     createdAt: b.createdAt,
     updatedAt: b.updatedAt,
@@ -58,6 +60,29 @@ export const trackDownload = asyncHandler(async (req: Request, res: Response) =>
   }
   const updated = await prisma.book.update({ where: { id: book.id }, data: { downloads: { increment: 1 } } });
   sendResponse(res, 200, { fileUrl: updated.fileUrl, downloads: updated.downloads });
+});
+
+/** Fired once when the in-browser reader opens a book — a distinct signal
+ * from downloading the raw file, same distinction Dars already makes
+ * between "plays" and nothing else needing a download at all. */
+export const trackView = asyncHandler(async (req: Request, res: Response) => {
+  const book = await prisma.book.findUnique({ where: { id: req.params.id } });
+  if (!book || book.status !== "PUBLISHED") {
+    sendError(res, 404, "Iki gitabo ntikiboneka.");
+    return;
+  }
+  const updated = await prisma.book.update({ where: { id: book.id }, data: { views: { increment: 1 } } });
+  sendResponse(res, 200, { views: updated.views });
+});
+
+export const trackShare = asyncHandler(async (req: Request, res: Response) => {
+  const book = await prisma.book.findUnique({ where: { id: req.params.id } });
+  if (!book || book.status !== "PUBLISHED") {
+    sendError(res, 404, "Iki gitabo ntikiboneka.");
+    return;
+  }
+  const updated = await prisma.book.update({ where: { id: book.id }, data: { shares: { increment: 1 } } });
+  sendResponse(res, 200, { shares: updated.shares });
 });
 
 export const listAdmin = asyncHandler(async (req: Request, res: Response) => {

@@ -5,6 +5,8 @@ import {
   listAdmin,
   listPublished,
   trackDownload,
+  trackShare,
+  trackView,
   updateBook,
 } from "../controllers/bookController.js";
 import { authenticate, requirePermission } from "../middleware/auth.js";
@@ -15,6 +17,8 @@ const upload = makeMultiFieldUploader({ file: "documents", coverImage: "images" 
 
 router.get("/published", listPublished);
 router.post("/:id/download", trackDownload);
+router.post("/:id/view", trackView);
+router.post("/:id/share", trackShare);
 
 router.use(authenticate);
 
