@@ -3,6 +3,7 @@ import {
   approveStudent,
   blockStudent,
   getStudentDetail,
+  getStudentTimeBreakdown,
   listPendingStudents,
   listStudents,
   rejectStudent,
@@ -17,6 +18,7 @@ router.use(authenticate);
 router.get("/", requirePermission("student.view"), listStudents);
 router.get("/pending", requirePermission("student.approve"), listPendingStudents);
 router.get("/:id", requirePermission("student.view"), getStudentDetail);
+router.get("/:id/time", requirePermission("student.view"), getStudentTimeBreakdown);
 router.post("/:id/approve", requirePermission("student.approve"), approveStudent);
 router.post("/:id/reject", requirePermission("student.approve"), rejectStudent);
 router.post("/:id/block", requirePermission("student.block"), blockStudent);

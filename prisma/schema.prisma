@@ -65,6 +65,7 @@ model User {
 
   sessions       Session[]
   activityEvents ActivityEvent[]
+  activityTimes  ActivityTime[]
 
   ifaidaPosts Ifaida[]
 
@@ -135,6 +136,24 @@ model ActivityEvent {
   type      String // LOGIN | LOGOUT | CHAT_OPEN | BOOK_DOWNLOAD | CLASS_JOIN | CLASS_LEAVE | PAGE_VIEW
   meta      String   @default("{}")
   createdAt DateTime @default(now())
+}
+
+// Real per-second time-on-platform, broken down by what the person was
+// actually doing — not just "logged in for N minutes" (Session already
+// covers that), but "spent this many seconds on the home page vs. taking
+// exams vs. reading books". One row per user+category+day, incremented in
+// place rather than one row per heartbeat — a student active every day for
+// a year is 365 rows per category, not tens of thousands.
+model ActivityTime {
+  id       String   @id @default(uuid())
+  userId   String
+  user     User     @relation(fields: [userId], references: [id])
+  category String // HOME | ABOUT | EXAM | BOOKS | DARS | LIVE_CLASS | CHAT | IFAIDA | ANNOUNCEMENTS | ADMIN | OTHER
+  date     DateTime // midnight UTC of the day this bucket represents
+  seconds  Int      @default(0)
+
+  @@unique([userId, category, date])
+  @@index([userId, date])
 }
 
 // ===================== Push notifications (Phase 9) =====================
@@ -288,6 +307,7 @@ model Exam {
   passingScorePercent Int       @default(60)
   allowMultipleAttempts Boolean @default(false)
   status              String    @default("DRAFT") // DRAFT | PUBLISHED
+  scheduledFor        DateTime? // null = attemptable any time after publish; otherwise a student can view the exam and see a live countdown, but startAttempt is server-rejected until this passes
   publishedAt         DateTime?
   createdById         String
   createdBy           User      @relation("ExamCreatedBy", fields: [createdById], references: [id])

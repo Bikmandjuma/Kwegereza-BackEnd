@@ -233,3 +233,72 @@ export const unblockStudent = asyncHandler(async (req: Request, res: Response) =
   await writeAudit(req.user!.id, "student.unblock", id);
   sendResponse(res, 200, { user: publicUser(updated) }, "Konti yasubijwe mu bikorwa.");
 });
+
+function getRangeStart(range: string): Date | null {
+  const startOfToday = new Date();
+  startOfToday.setUTCHours(0, 0, 0, 0);
+  switch (range) {
+    case "daily":
+      return startOfToday;
+    case "weekly": {
+      const d = new Date(startOfToday);
+      d.setUTCDate(d.getUTCDate() - 6);
+      return d;
+    }
+    case "monthly": {
+      const d = new Date(startOfToday);
+      d.setUTCDate(d.getUTCDate() - 29);
+      return d;
+    }
+    case "lifetime":
+    default:
+      return null;
+  }
+}
+
+/**
+ * Real per-second time-on-platform for one student, broken down by activity
+ * category, filterable daily/weekly/monthly/lifetime. Two real data sources
+ * combined: ActivityTime (per-category buckets) for the breakdown, and
+ * Session (already existed, heartbeat-based) for total platform time — an
+ * in-progress session (no durationSeconds yet) is approximated from its
+ * most recent heartbeat rather than ignored, so "right now" isn't undercounted.
+ */
+export const getStudentTimeBreakdown = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const range = String(req.query.range ?? "weekly");
+  const student = await prisma.user.findUnique({ where: { id } });
+  if (!student || student.role !== "STUDENT") {
+    sendError(res, 404, "Umunyeshuri ntaboneka.");
+    return;
+  }
+  if (isOutOfGenderScope(req.user!, student)) {
+    sendError(res, 404, "Umunyeshuri ntaboneka.");
+    return;
+  }
+
+  const rangeStart = getRangeStart(range);
+
+  const byCategory = await prisma.activityTime.groupBy({
+    by: ["category"],
+    where: { userId: id, ...(rangeStart ? { date: { gte: rangeStart } } : {}) },
+    _sum: { seconds: true },
+  });
+
+  const sessions = await prisma.session.findMany({
+    where: { userId: id, ...(rangeStart ? { startedAt: { gte: rangeStart } } : {}) },
+    select: { startedAt: true, lastHeartbeatAt: true, durationSeconds: true },
+  });
+  const totalPlatformSeconds = sessions.reduce((sum, s) => {
+    if (s.durationSeconds != null) return sum + s.durationSeconds;
+    return sum + Math.max(0, Math.floor((s.lastHeartbeatAt.getTime() - s.startedAt.getTime()) / 1000));
+  }, 0);
+
+  sendResponse(res, 200, {
+    range,
+    totalPlatformSeconds,
+    byCategory: byCategory
+      .map((c) => ({ category: c.category, seconds: c._sum.seconds ?? 0 }))
+      .sort((a, b) => b.seconds - a.seconds),
+  });
+});

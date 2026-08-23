@@ -15,12 +15,28 @@ function publicExam(e: any) {
     passingScorePercent: e.passingScorePercent,
     allowMultipleAttempts: e.allowMultipleAttempts,
     status: e.status,
+    scheduledFor: e.scheduledFor,
     publishedAt: e.publishedAt,
     createdAt: e.createdAt,
     updatedAt: e.updatedAt,
     createdByName: e.createdBy?.fullName,
     questionCount: e.questions?.length ?? e._count?.questions,
   };
+}
+
+/** Parses a scheduledFor value from a request body — accepts an ISO string,
+ * or explicit null/"" to clear it back to "start any time". Returns
+ * `undefined` when the field wasn't sent at all, so callers can tell "not
+ * provided" apart from "explicitly cleared". Throws a plain Error with a
+ * Kinyarwanda message on an unparseable date, for the caller to surface. */
+function parseScheduledFor(value: unknown): Date | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || value === "") return null;
+  const date = new Date(value as string);
+  if (Number.isNaN(date.getTime())) {
+    throw new Error("Itariki/isaha byatanzwe ntibisobanutse.");
+  }
+  return date;
 }
 
 // ===================== Admin: exam CRUD =====================
@@ -55,9 +71,17 @@ export const listAdmin = asyncHandler(async (req: Request, res: Response) => {
 });
 
 export const createExam = asyncHandler(async (req: Request, res: Response) => {
-  const { title, description, category, durationMinutes, passingScorePercent, allowMultipleAttempts } = req.body ?? {};
+  const { title, description, category, durationMinutes, passingScorePercent, allowMultipleAttempts, scheduledFor } =
+    req.body ?? {};
   if (!title?.trim()) {
     sendError(res, 422, "Uzuza umutwe w'ikizamini.");
+    return;
+  }
+  let parsedScheduledFor: Date | null | undefined;
+  try {
+    parsedScheduledFor = parseScheduledFor(scheduledFor);
+  } catch (err: any) {
+    sendError(res, 422, err.message);
     return;
   }
   const exam = await prisma.exam.create({
@@ -68,6 +92,7 @@ export const createExam = asyncHandler(async (req: Request, res: Response) => {
       durationMinutes: durationMinutes ? Math.max(1, Number(durationMinutes)) : null,
       passingScorePercent: passingScorePercent ? Math.min(100, Math.max(0, Number(passingScorePercent))) : 60,
       allowMultipleAttempts: Boolean(allowMultipleAttempts),
+      scheduledFor: parsedScheduledFor ?? null,
       status: "DRAFT",
       createdById: req.user!.id,
     },
@@ -82,7 +107,8 @@ export const updateExam = asyncHandler(async (req: Request, res: Response) => {
     sendError(res, 404, "Iki kizamini ntikiboneka.");
     return;
   }
-  const { title, description, category, durationMinutes, passingScorePercent, allowMultipleAttempts } = req.body ?? {};
+  const { title, description, category, durationMinutes, passingScorePercent, allowMultipleAttempts, scheduledFor } =
+    req.body ?? {};
 
   const data: any = {};
   if (title !== undefined) data.title = String(title).trim();
@@ -91,6 +117,13 @@ export const updateExam = asyncHandler(async (req: Request, res: Response) => {
   if (durationMinutes !== undefined) data.durationMinutes = durationMinutes ? Math.max(1, Number(durationMinutes)) : null;
   if (passingScorePercent !== undefined) data.passingScorePercent = Math.min(100, Math.max(0, Number(passingScorePercent)));
   if (allowMultipleAttempts !== undefined) data.allowMultipleAttempts = Boolean(allowMultipleAttempts);
+  try {
+    const parsedScheduledFor = parseScheduledFor(scheduledFor);
+    if (parsedScheduledFor !== undefined) data.scheduledFor = parsedScheduledFor;
+  } catch (err: any) {
+    sendError(res, 422, err.message);
+    return;
+  }
   // Publishing/unpublishing is a separate, dedicated permission (exam.publish)
   // — see setExamStatus below — so it deliberately doesn't live here even
   // though the request shape would allow it. Someone granted only
@@ -366,6 +399,13 @@ export const startAttempt = asyncHandler(async (req: Request, res: Response) => 
   const exam = await prisma.exam.findUnique({ where: { id: req.params.id } });
   if (!exam || exam.status !== "PUBLISHED") {
     sendError(res, 404, "Iki kizamini ntikiboneka.");
+    return;
+  }
+  // The REAL gate — a disabled/hidden Start button in the UI is just a
+  // courtesy. Someone could always call this endpoint directly before the
+  // scheduled time, so the actual guarantee has to live here.
+  if (exam.scheduledFor && exam.scheduledFor.getTime() > Date.now()) {
+    sendError(res, 422, "Iki kizamini kitaratangira.");
     return;
   }
 

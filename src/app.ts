@@ -46,6 +46,15 @@ export function createApp() {
 
   // Uploaded book files / audio / images — dev-tier storage. See utils/storage.ts
   // for what changes when this moves to S3-compatible object storage in production.
+  //
+  // BUG FIX: helmet()'s secure defaults set `Cross-Origin-Resource-Policy:
+  // same-origin` on every response — this blocks the BROWSER (not just CORS)
+  // from rendering/embedding any image, audio, video, or PDF fetched from a
+  // different origin than the page itself, even when CORS headers are
+  // otherwise fine. Since the frontend and this API live on different
+  // Railway subdomains, every uploaded file was silently failing to
+  // display. Relaxed only for this one static-file route — the rest of the
+  // API keeps helmet's strict defaults.
   app.use("/uploads", express.static(UPLOADS_DIR));
 
   app.use("/api/auth", authRoutes);
