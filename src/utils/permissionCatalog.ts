@@ -37,10 +37,6 @@ export const PERMISSION_CATALOG: PermissionDef[] = [
   { key: "book.delete", category: "Ibitabo", label: "Gusiba igitabo" },
   { key: "book.download", category: "Ibitabo", label: "Gukuraho ibitabo" },
 
-  { key: "exam.view", category: "Ibizamini", label: "Kureba ibizamini" },
-  { key: "exam.create", category: "Ibizamini", label: "Kwandika ikizamini" },
-  { key: "exam.manage", category: "Ibizamini", label: "Gucunga ibizamini" },
-
   { key: "classroom.view", category: "Amasomo ya Live", label: "Kureba amasomo ya live" },
   { key: "classroom.create", category: "Amasomo ya Live", label: "Gushyiraho isomo rya live" },
   { key: "classroom.host", category: "Amasomo ya Live", label: "Gutangira no kuyobora isomo" },
@@ -60,6 +56,12 @@ export const PERMISSION_CATALOG: PermissionDef[] = [
   { key: "announcement.publish", category: "Amatangazo", label: "Gutangaza itangazo" },
 
   { key: "teacher.manage", category: "Abarimu", label: "Gucunga abarimu" },
+
+  { key: "exam.create", category: "Ibizamini", label: "Kurema ikizamini" },
+  { key: "exam.update", category: "Ibizamini", label: "Guhindura ikizamini" },
+  { key: "exam.delete", category: "Ibizamini", label: "Gusiba ikizamini" },
+  { key: "exam.publish", category: "Ibizamini", label: "Gutangaza ikizamini" },
+  { key: "exam.results", category: "Ibizamini", label: "Kureba amanota y'abanyeshuri" },
 ];
 
 export const VALID_PERMISSION_KEYS = new Set(PERMISSION_CATALOG.map((p) => p.key));

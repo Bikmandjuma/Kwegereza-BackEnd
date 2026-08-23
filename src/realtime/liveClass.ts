@@ -438,14 +438,23 @@ export function registerLiveClassHandlers(io: Server, socket: Socket) {
     io.to(target.socketId).emit(event, { liveClassId, fromUserId: userId, ...payload });
   }
 
-  socket.on("webrtc:offer", ({ liveClassId, toUserId, sdp }) => {
-    relayIfHostInvolved("webrtc:offer", liveClassId, toUserId, { sdp });
+  // BUG FIX: these three handlers used to destructure only `{ sdp }` /
+  // `{ candidate }` and drop `kind` entirely when relaying — so every
+  // offer/answer/ICE candidate still negotiated a working peer connection,
+  // but the receiving side's `ontrack` handler always got `kind: undefined`
+  // and silently matched none of its `if (kind === "broadcast") ...`
+  // branches. Connections formed; tracks just never got attached to any
+  // <audio>/<video> element on either side. This is why nobody could hear
+  // the host (or anyone) speak — it was never a microphone/permission
+  // problem, it was this one dropped field.
+  socket.on("webrtc:offer", ({ liveClassId, toUserId, sdp, kind }) => {
+    relayIfHostInvolved("webrtc:offer", liveClassId, toUserId, { sdp, kind });
   });
-  socket.on("webrtc:answer", ({ liveClassId, toUserId, sdp }) => {
-    relayIfHostInvolved("webrtc:answer", liveClassId, toUserId, { sdp });
+  socket.on("webrtc:answer", ({ liveClassId, toUserId, sdp, kind }) => {
+    relayIfHostInvolved("webrtc:answer", liveClassId, toUserId, { sdp, kind });
   });
-  socket.on("webrtc:ice-candidate", ({ liveClassId, toUserId, candidate }) => {
-    relayIfHostInvolved("webrtc:ice-candidate", liveClassId, toUserId, { candidate });
+  socket.on("webrtc:ice-candidate", ({ liveClassId, toUserId, candidate, kind }) => {
+    relayIfHostInvolved("webrtc:ice-candidate", liveClassId, toUserId, { candidate, kind });
   });
 
   socket.on("disconnect", async () => {

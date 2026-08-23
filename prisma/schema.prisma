@@ -72,6 +72,9 @@ model User {
   createdDars          Dars[]         @relation("DarsCreatedBy")
   updatedDars          Dars[]         @relation("DarsUpdatedBy")
   createdAnnouncements Announcement[] @relation("AnnouncementAuthor")
+
+  createdExams  Exam[]        @relation("ExamCreatedBy")
+  examAttempts  ExamAttempt[] @relation("ExamAttempts")
 }
 
 // AUDIT = what management changed (separate from ACTIVITY = what a user did,
@@ -263,6 +266,94 @@ model PageVisit {
   path      String
   visitorId String // anonymous client-generated id (localStorage), NOT a user id
   createdAt DateTime @default(now())
+}
+
+// ===================== Exams / Quizzes (Phase 13) =====================
+// Two real, auto-gradeable question types:
+//   MULTIPLE_CHOICE — options carry isCorrect; graded by exact option match.
+//   FILL_BLANK      — QuestionOption rows double as the list of accepted
+//                      answers (isCorrect always true for these rows);
+//                      graded by case/whitespace-insensitive text match
+//                      against any one of them. No "AI grading" pretense —
+//                      this is a real, deterministic string comparison.
+
+model Exam {
+  id                  String    @id @default(uuid())
+  title               String
+  description         String    @default("")
+  category            String    @default("")
+  durationMinutes     Int? // null = untimed
+  passingScorePercent Int       @default(60)
+  allowMultipleAttempts Boolean @default(false)
+  status              String    @default("DRAFT") // DRAFT | PUBLISHED
+  publishedAt         DateTime?
+  createdById         String
+  createdBy           User      @relation("ExamCreatedBy", fields: [createdById], references: [id])
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  questions Question[]
+  attempts  ExamAttempt[]
+}
+
+model Question {
+  id      String   @id @default(uuid())
+  examId  String
+  exam    Exam     @relation(fields: [examId], references: [id], onDelete: Cascade)
+  type    String // MULTIPLE_CHOICE | FILL_BLANK
+  prompt  String
+  points  Int      @default(1)
+  order   Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  options QuestionOption[]
+  answers ExamAnswer[]
+}
+
+model QuestionOption {
+  id         String   @id @default(uuid())
+  questionId String
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  text       String
+  isCorrect  Boolean  @default(false)
+  order      Int      @default(0)
+
+  selectedIn ExamAnswer[]
+}
+
+model ExamAttempt {
+  id            String    @id @default(uuid())
+  examId        String
+  exam          Exam      @relation(fields: [examId], references: [id], onDelete: Cascade)
+  userId        String
+  user          User      @relation("ExamAttempts", fields: [userId], references: [id])
+  status        String    @default("IN_PROGRESS") // IN_PROGRESS | SUBMITTED
+  scorePercent  Float?
+  totalPoints   Int       @default(0)
+  earnedPoints  Int       @default(0)
+  passed        Boolean?
+  startedAt     DateTime  @default(now())
+  submittedAt   DateTime?
+
+  answers ExamAnswer[]
+
+  @@index([examId, userId])
+}
+
+model ExamAnswer {
+  id               String          @id @default(uuid())
+  attemptId        String
+  attempt          ExamAttempt     @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  questionId       String
+  question         Question        @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  selectedOptionId String?
+  selectedOption   QuestionOption? @relation(fields: [selectedOptionId], references: [id])
+  textAnswer       String?
+  isCorrect        Boolean         @default(false)
+  pointsAwarded    Int             @default(0)
+
+  @@unique([attemptId, questionId])
 }
 
 // ===================== Live audio classrooms (Phase 10) =====================

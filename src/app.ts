@@ -13,6 +13,7 @@ import announcementRoutes from "./routes/announcementRoutes.js";
 import bookRoutes from "./routes/bookRoutes.js";
 import chatRoutes from "./routes/chatRoutes.js";
 import darsRoutes from "./routes/darsRoutes.js";
+import examRoutes from "./routes/examRoutes.js";
 import ifaidaRoutes from "./routes/ifaidaRoutes.js";
 import liveClassRoutes from "./routes/liveClassRoutes.js";
 import notificationRoutes from "./routes/notificationRoutes.js";
@@ -60,6 +61,7 @@ export function createApp() {
   app.use("/api/notifications", notificationRoutes);
   app.use("/api/books", bookRoutes);
   app.use("/api/dars", darsRoutes);
+  app.use("/api/exams", examRoutes);
   app.use("/api/announcements", announcementRoutes);
   app.use("/api/teachers", teacherRoutes);
   app.use("/api/search", searchRoutes);
