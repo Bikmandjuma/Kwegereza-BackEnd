@@ -29,6 +29,7 @@ function publicUser(user: {
   phone: string | null;
   gender: string | null;
   kunia: string | null;
+  quranLevel: string | null;
   passwordHash: string | null;
   avatarUrl: string | null;
   role: string;
@@ -43,6 +44,7 @@ function publicUser(user: {
     phone: user.phone,
     gender: user.gender,
     kunia: user.kunia,
+    quranLevel: user.quranLevel,
     avatarUrl: user.avatarUrl,
     hasPassword: Boolean(user.passwordHash), // lets the frontend hide "change password" for Google-only accounts
     role: user.role,
@@ -54,19 +56,50 @@ function publicUser(user: {
 
 const VALID_GENDERS = new Set(["MALE", "FEMALE"]);
 
-export const register = asyncHandler(async (req: Request, res: Response) => {
-  const { fullName, email, password, phone, gender, kunia } = req.body ?? {};
+const QURAN_READING_TO_LEVEL: Record<string, string> = {
+  KNOWS: "LEVEL_1", // "Nzi gusoma gusa" — already reads Qur'an
+  TRYING: "LEVEL_2", // "Ngerageza gusoma" — learning to read
+  NONE: "LEVEL_3", // "Ntabyo nzi" — doesn't know yet
+};
 
-  if (!fullName || !email || !password) {
-    sendError(res, 422, "Uzuza amazina, imeyili, n'ijambo ry'ibanga.");
-    return;
-  }
-  if (String(password).length < 6) {
-    sendError(res, 422, "Ijambo ry'ibanga rigomba kuba rifite byibura inyuguti 6.");
+export const register = asyncHandler(async (req: Request, res: Response) => {
+  const {
+    fullName,
+    email,
+    phone,
+    gender,
+    kunia,
+    ageRange,
+    location,
+    quranReading,
+    availableDays,
+    availableHours,
+    registrationNote,
+    agreedToRequirements,
+    agreedToRules,
+  } = req.body ?? {};
+
+  // No password field at all — per the new registration flow, a student's
+  // password is their own WhatsApp number, communicated to them by email
+  // the moment a leader approves the account (see approveStudent). That
+  // means phone is no longer optional here: it IS the credential.
+  if (!fullName?.trim() || !email?.trim() || !phone?.trim()) {
+    sendError(res, 422, "Uzuza amazina, imeyili, na nimero za WhatsApp.");
     return;
   }
   if (gender && !VALID_GENDERS.has(String(gender))) {
     sendError(res, 422, "Igitsina kigomba kuba MALE cyangwa FEMALE.");
+    return;
+  }
+  if (!QURAN_READING_TO_LEVEL[quranReading]) {
+    sendError(res, 422, "Uzuza igisubizo ku kibazo 'Ese uzi gusoma Qur'aan ureba?'.");
+    return;
+  }
+  // Both consent gates are real requirements, not just a frontend courtesy —
+  // a request with either missing/false is rejected here regardless of
+  // what the client-side wizard did or didn't show.
+  if (!agreedToRequirements || !agreedToRules) {
+    sendError(res, 422, "Ugomba kwemeza ko wasomye ibisabwa n'amategeko ajyanye n'amasomo.");
     return;
   }
 
@@ -76,14 +109,20 @@ export const register = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
-  const passwordHash = await bcrypt.hash(password, 12);
+  const passwordHash = await bcrypt.hash(String(phone).trim(), 12);
   const user = await prisma.user.create({
     data: {
-      fullName,
+      fullName: fullName.trim(),
       email: String(email).toLowerCase(),
-      phone: phone ?? null,
+      phone: String(phone).trim(),
       gender: gender ?? null,
       kunia: kunia?.trim() ? String(kunia).trim() : null,
+      ageRange: ageRange ? String(ageRange) : null,
+      location: location?.trim() ? String(location).trim() : null,
+      quranLevel: QURAN_READING_TO_LEVEL[quranReading],
+      availableDays: availableDays?.trim() ? String(availableDays).trim() : null,
+      availableHours: availableHours?.trim() ? String(availableHours).trim() : null,
+      registrationNote: registrationNote?.trim() ? String(registrationNote).trim() : null,
       passwordHash,
       role: "STUDENT",
       status: "PENDING",
@@ -96,7 +135,7 @@ export const register = asyncHandler(async (req: Request, res: Response) => {
     res,
     201,
     { user: publicUser(user) },
-    "Kwiyandikisha byagenze neza. Konti yawe iri gutegereza kwemezwa n'ubuyobozi."
+    "Amakuru yawe yoherejwe neza. Turi bukumenyeshe kuri email yawe niba ubuyobozi bwemeye ko wiga."
   );
 });
 
@@ -173,7 +212,7 @@ export const logout = asyncHandler(async (req: Request, res: Response) => {
  * sign-in is never a backdoor around leader/admin approval.
  */
 export const googleAuth = asyncHandler(async (req: Request, res: Response) => {
-  const { idToken } = req.body ?? {};
+  const { idToken, gender, ageRange, location, quranReading, availableDays, availableHours, phone } = req.body ?? {};
   if (!idToken || typeof idToken !== "string") {
     sendError(res, 422, "Nta idToken ya Google yoherejwe.");
     return;
@@ -199,6 +238,12 @@ export const googleAuth = asyncHandler(async (req: Request, res: Response) => {
         data: { googleId: profile.googleId, avatarUrl: profile.avatarUrl },
       });
     } else {
+      // A brand-new Google signup skips the manual wizard entirely, so the
+      // frontend collects the same "which class level" info in a short
+      // pre-step and sends it here, bundled into this one request — there's
+      // no separate authenticated call it could make afterward, since a
+      // PENDING account is never issued a token (see below).
+      const level = QURAN_READING_TO_LEVEL[quranReading];
       user = await prisma.user.create({
         data: {
           fullName: profile.fullName,
@@ -208,6 +253,13 @@ export const googleAuth = asyncHandler(async (req: Request, res: Response) => {
           passwordHash: null,
           role: "STUDENT",
           status: "PENDING",
+          gender: gender && VALID_GENDERS.has(String(gender)) ? gender : null,
+          phone: phone?.trim() ? String(phone).trim() : null,
+          ageRange: ageRange ? String(ageRange) : null,
+          location: location?.trim() ? String(location).trim() : null,
+          quranLevel: level ?? null,
+          availableDays: availableDays?.trim() ? String(availableDays).trim() : null,
+          availableHours: availableHours?.trim() ? String(availableHours).trim() : null,
         },
       });
     }

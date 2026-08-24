@@ -16,15 +16,24 @@ function baseLayout(bodyHtml: string): string {
   `;
 }
 
-export function approvalEmail(fullName: string, loginUrl: string) {
+export function approvalEmail(fullName: string, email: string, phone: string | null, loginUrl: string) {
   return {
-    subject: "Konti yawe kuri Kwegereza yemejwe!",
+    subject: "Urakaza neza muri Kwegereza Islam Umuryango!",
     html: baseLayout(`
-      <h2 style="color:#0b3d2e; margin:0 0 12px;">Murakaza neza, ${fullName}!</h2>
-      <p style="color:#33463c; line-height:1.6; margin:0 0 20px;">
-        Konti yawe kuri Kwegereza yemejwe n'ubuyobozi. Ubu ushobora kwinjira ukoreshe urubuga byuzuye —
-        amasomo, ibitabo, ibizamini, n'ibindi byose.
+      <h2 style="color:#0b3d2e; margin:0 0 12px;">Urakaza neza, ${fullName}!</h2>
+      <p style="color:#33463c; line-height:1.6; margin:0 0 16px;">
+        Ubuyobozi bwa Kwegereza Islam Umuryango bwemeje ko wiga. Ubu ushobora kwinjira ukoreshe
+        urubuga byuzuye — amasomo, ibitabo, ibizamini, n'ibindi byose.
       </p>
+      <div style="background:#f6f4ee; border:1px solid #e7e2d5; border-radius:12px; padding:16px 20px; margin:0 0 20px;">
+        <p style="color:#33463c; font-weight:700; margin:0 0 8px; font-size:13px;">Uko winjira (login):</p>
+        <p style="color:#33463c; margin:0 0 4px; font-size:13px;"><b>Email:</b> ${email}</p>
+        ${
+          phone
+            ? `<p style="color:#33463c; margin:0; font-size:13px;"><b>Ijambo ry'ibanga (password):</b> ${phone} (nimero zawe za WhatsApp wanditse)</p>`
+            : ""
+        }
+      </div>
       <a href="${loginUrl}" style="display:inline-block; background:#cf9d3f; color:#1a1206; font-weight:700; padding:12px 24px; border-radius:999px; text-decoration:none;">
         Injira kuri Kwegereza
       </a>

@@ -28,6 +28,12 @@ model User {
   phone        String?
   gender       String? // MALE | FEMALE — asked at registration, not required for existing accounts
   kunia        String? // Kunia / teknonym (e.g. "Umm-Ruslaan"), optional
+  ageRange     String? // e.g. "12-20" | "21-30" | "31-45" | "46+" — from registration
+  location     String? // "Aho utuye" — free text, e.g. "Rwanda/Kigali"
+  quranLevel   String? // LEVEL_1 (can already read) | LEVEL_2 (learning to read) | LEVEL_3 (cannot read yet) — derived at registration from the Qur'an-reading question, drives which class track a student is placed in
+  availableDays   String? // free text from registration, e.g. "Kuwa mbere, Kuwa kabiri"
+  availableHours  String? // free text from registration, e.g. "Saa 20:00 kugeza Saa 21:00"
+  registrationNote String? // optional free-text suggestion/request left at registration
   passwordHash String? // null for Google-only accounts (see googleId below)
   googleId     String?       @unique // Google "sub" claim — set once, on first Google sign-in/registration
   avatarUrl    String? // Google profile photo, if the account was created/linked via Google

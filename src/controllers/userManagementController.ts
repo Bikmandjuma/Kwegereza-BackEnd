@@ -16,6 +16,7 @@ function publicUser(u: any) {
     phone: u.phone,
     gender: u.gender,
     kunia: u.kunia,
+    quranLevel: u.quranLevel,
     role: u.role,
     status: u.status,
     permissions: JSON.parse(u.permissions || "[]"),

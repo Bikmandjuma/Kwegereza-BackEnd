@@ -16,6 +16,13 @@ function publicUser(user: any) {
     email: user.email,
     phone: user.phone,
     gender: user.gender,
+    kunia: user.kunia,
+    ageRange: user.ageRange,
+    location: user.location,
+    quranLevel: user.quranLevel,
+    availableDays: user.availableDays,
+    availableHours: user.availableHours,
+    registrationNote: user.registrationNote,
     role: user.role,
     status: user.status,
     approvedAt: user.approvedAt,
@@ -161,7 +168,7 @@ export const approveStudent = asyncHandler(async (req: Request, res: Response) =
 
   // Fire-and-forget — a failed/unconfigured email must never block the
   // approval itself (in-app + push notification above already succeeded).
-  const { subject, html } = approvalEmail(updated.fullName, `${getFrontendUrl()}/login`);
+  const { subject, html } = approvalEmail(updated.fullName, updated.email, updated.phone, `${getFrontendUrl()}/login`);
   sendEmail({ to: updated.email, subject, html }).catch((err) =>
     console.error("[studentController] approval email failed:", err)
   );
