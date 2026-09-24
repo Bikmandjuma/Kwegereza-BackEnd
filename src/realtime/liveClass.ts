@@ -1,6 +1,16 @@
 import type { Server, Socket } from "socket.io";
 import { prisma } from "../utils/prisma.js";
 import { trackEvent } from "../utils/activity.js";
+import {
+  getOrCreateRoom,
+  getRoom,
+  getOrCreatePeerMedia,
+  createWebRtcTransport,
+  listRoomProducers,
+  removePeer as removePeerMedia,
+  closeRoom as closeRoomMedia,
+  type MediaTag,
+} from "./mediasoup/rooms.js";
 
 type MicState = "HOST" | "MUTED" | "APPROVED";
 
@@ -9,7 +19,7 @@ interface Participant {
   fullName: string;
   socketId: string;
   role: "HOST" | "PARTICIPANT"; // role WITHIN this classroom
-  accountRole: string; // real account role (STUDENT/LEADER/ADMIN) — lets the host find leaders to delegate chat-moderation to
+  accountRole: string; // real account role (STUDENT/LEADER/ADMIN) lets the host find leaders to delegate chat-moderation to
   micState: MicState;
   handRaised: boolean;
 }
@@ -33,7 +43,7 @@ function anonLabelFor(state: ClassroomState, userId: string): string {
   return label;
 }
 
-// One entry per LIVE class. Ephemeral by design — attendance and the class
+// One entry per LIVE class. Ephemeral by design attendance and the class
 // record itself are persisted to Postgres/SQLite; who's-online-right-now
 // lives in memory (Redis in a multi-instance production deployment, same
 // interface).
@@ -56,7 +66,7 @@ function participantList(state: ClassroomState) {
 
 /**
  * Shared by both the REST "end class" endpoint and the socket `classroom:end`
- * event, so there's exactly one code path that closes a class — no matter
+ * event, so there's exactly one code path that closes a class no matter
  * which route triggered it, DB state and connected clients stay in sync.
  */
 export async function endLiveClass(io: Server | null, liveClassId: string) {
@@ -87,6 +97,10 @@ export async function endLiveClass(io: Server | null, liveClassId: string) {
   }
 
   classrooms.delete(liveClassId);
+  // Tear down this class's mediasoup router + every peer's transports/
+  // producers/consumers along with it nothing should keep publishing
+  // audio/video into a class that has ended.
+  closeRoomMedia(liveClassId);
   return updated;
 }
 
@@ -119,11 +133,11 @@ export function registerLiveClassHandlers(io: Server, socket: Socket) {
     const existing = state.participants.get(userId);
 
     // A locked class refuses NEW participants. Someone who was already in
-    // (existing entry, e.g. a refreshed tab) is let back in — locking is
+    // (existing entry, e.g. a refreshed tab) is let back in locking is
     // meant to stop new people from walking in, not to eject who's already
     // there. The host can always get in regardless of lock state.
     if (state.locked && !isHost && !existing) {
-      ack?.({ ok: false, error: "Iri somo ryafunzwe n'umuyobozi — ntushobora kwinjira ubu." });
+      ack?.({ ok: false, error: "Iri somo ryafunzwe n'umuyobozi ntushobora kwinjira ubu." });
       return;
     }
 
@@ -207,7 +221,7 @@ export function registerLiveClassHandlers(io: Server, socket: Socket) {
   });
 
   // Distinct from revoke-speaker: this declines a RAISED HAND request without
-  // ever having granted mic access — the student never spoke, they just get
+  // ever having granted mic access the student never spoke, they just get
   // told no. Revoke is for taking the mic away from someone already approved.
   socket.on("classroom:reject-speaker", ({ liveClassId, targetUserId }, ack) => {
     const state = requireHost(liveClassId);
@@ -323,6 +337,7 @@ export function registerLiveClassHandlers(io: Server, socket: Socket) {
       data: { leftAt: new Date() },
     });
     io.to(`class:${liveClassId}`).emit("classroom:participant-left", { userId: targetUserId });
+    removePeerMedia(liveClassId, targetUserId);
     ack?.({ ok: true });
   });
 
@@ -340,7 +355,7 @@ export function registerLiveClassHandlers(io: Server, socket: Socket) {
     return state.hostId === userId || state.chatModerators.has(userId);
   }
 
-  // ---- classroom chat (ephemeral — a text side-channel for the room, not a
+  // ---- classroom chat (ephemeral a text side-channel for the room, not a
   // persisted conversation like ChatPage's DMs; nothing to send if you're
   // not currently a participant of that class) ----
   socket.on("classroom:chat-message", ({ liveClassId, body }) => {
@@ -350,7 +365,7 @@ export function registerLiveClassHandlers(io: Server, socket: Socket) {
     const sender = state?.participants.get(userId);
     if (!state || !sender) return;
 
-    // Identity is hidden by default (per spec) — the SERVER decides what
+    // Identity is hidden by default (per spec) the SERVER decides what
     // name goes out, not the client, so there's no real name in the socket
     // payload at all while hidden (not just visually hidden in the UI).
     const displayName = state.namesRevealed ? fullName : anonLabelFor(state, userId);
@@ -421,40 +436,180 @@ export function registerLiveClassHandlers(io: Server, socket: Socket) {
     ack?.({ ok: true });
   });
 
-  // ---- WebRTC signaling relay (star topology: host <-> each participant) ----
-  // Server never inspects SDP/ICE contents — it only routes them to the right
-  // socket, and enforces that one side of every exchange is always the host.
-  // This keeps today's implementation correct for small classrooms while
-  // staying SFU-ready: swapping this relay for an SFU later doesn't change
-  // the client-facing event names at all, only what sits behind them.
-  function relayIfHostInvolved(event: string, liveClassId: string, toUserId: string, payload: any) {
+  // ---- mediasoup: real SFU media, replacing the old peer-to-peer mesh ----
+  // The classroom/host-control logic above (participants, mic approval,
+  // raise-hand, lock, chat) is untouched only the actual audio/video
+  // transport changes. Every handler re-checks that the caller is a known
+  // participant of this class (and, where relevant, the host) before
+  // touching mediasoup state; nothing here trusts the client's claims.
+
+  function currentParticipant(liveClassId: string) {
     const state = classrooms.get(liveClassId);
-    if (!state) return;
-    const amHost = state.hostId === userId;
-    const targetIsHost = state.hostId === toUserId;
-    if (!amHost && !targetIsHost) return; // reject participant-to-participant signaling
-    const target = state.participants.get(toUserId);
-    if (!target) return;
-    io.to(target.socketId).emit(event, { liveClassId, fromUserId: userId, ...payload });
+    return state?.participants.get(userId);
   }
 
-  // BUG FIX: these three handlers used to destructure only `{ sdp }` /
-  // `{ candidate }` and drop `kind` entirely when relaying — so every
-  // offer/answer/ICE candidate still negotiated a working peer connection,
-  // but the receiving side's `ontrack` handler always got `kind: undefined`
-  // and silently matched none of its `if (kind === "broadcast") ...`
-  // branches. Connections formed; tracks just never got attached to any
-  // <audio>/<video> element on either side. This is why nobody could hear
-  // the host (or anyone) speak — it was never a microphone/permission
-  // problem, it was this one dropped field.
-  socket.on("webrtc:offer", ({ liveClassId, toUserId, sdp, kind }) => {
-    relayIfHostInvolved("webrtc:offer", liveClassId, toUserId, { sdp, kind });
+  function canProduce(liveClassId: string, mediaTag: MediaTag): boolean {
+    const participant = currentParticipant(liveClassId);
+    if (!participant) return false;
+    if (participant.role === "HOST") return true;
+    // A regular participant may only publish their own mic, and only once
+    // the host has approved them to speak same rule that already
+    // governs `micState` for the UI, now enforced for the actual media too.
+    return mediaTag === "mic" && participant.micState === "APPROVED";
+  }
+
+  socket.on("media:get-rtp-capabilities", async ({ liveClassId }, ack) => {
+    if (!currentParticipant(liveClassId)) {
+      ack?.({ ok: false, error: "Ntabwo uri mu isomo." });
+      return;
+    }
+    const room = await getOrCreateRoom(liveClassId);
+    ack?.({ ok: true, rtpCapabilities: room.router.rtpCapabilities });
   });
-  socket.on("webrtc:answer", ({ liveClassId, toUserId, sdp, kind }) => {
-    relayIfHostInvolved("webrtc:answer", liveClassId, toUserId, { sdp, kind });
+
+  socket.on("media:get-producers", async ({ liveClassId }, ack) => {
+    const room = getRoom(liveClassId);
+    if (!currentParticipant(liveClassId) || !room) {
+      ack?.({ ok: false, error: "Isomo ntabwo riraboneka." });
+      return;
+    }
+    ack?.({ ok: true, producers: listRoomProducers(room).filter((p) => p.userId !== userId) });
   });
-  socket.on("webrtc:ice-candidate", ({ liveClassId, toUserId, candidate, kind }) => {
-    relayIfHostInvolved("webrtc:ice-candidate", liveClassId, toUserId, { candidate, kind });
+
+  socket.on("media:create-transport", async ({ liveClassId, direction }, ack) => {
+    if (!currentParticipant(liveClassId)) {
+      ack?.({ ok: false, error: "Ntabwo uri mu isomo." });
+      return;
+    }
+    const room = await getOrCreateRoom(liveClassId);
+    const peerMedia = getOrCreatePeerMedia(room, userId);
+    const transport = await createWebRtcTransport(room.router);
+
+    if (direction === "send") peerMedia.sendTransport = transport;
+    else peerMedia.recvTransport = transport;
+
+    ack?.({
+      ok: true,
+      id: transport.id,
+      iceParameters: transport.iceParameters,
+      iceCandidates: transport.iceCandidates,
+      dtlsParameters: transport.dtlsParameters,
+    });
+  });
+
+  socket.on("media:connect-transport", async ({ liveClassId, transportId, dtlsParameters }, ack) => {
+    const room = getRoom(liveClassId);
+    const peerMedia = room?.peers.get(userId);
+    if (!peerMedia) {
+      ack?.({ ok: false, error: "Transport ntiboneka." });
+      return;
+    }
+    const transport =
+      peerMedia.sendTransport?.id === transportId
+        ? peerMedia.sendTransport
+        : peerMedia.recvTransport?.id === transportId
+        ? peerMedia.recvTransport
+        : undefined;
+    if (!transport) {
+      ack?.({ ok: false, error: "Transport ntiboneka." });
+      return;
+    }
+    try {
+      await transport.connect({ dtlsParameters });
+      ack?.({ ok: true });
+    } catch (err: any) {
+      ack?.({ ok: false, error: err?.message ?? "Guhuza transport byanze." });
+    }
+  });
+
+  socket.on("media:produce", async ({ liveClassId, kind, mediaKind, rtpParameters }, ack) => {
+    const mediaTag = kind as MediaTag;
+    if (!canProduce(liveClassId, mediaTag)) {
+      ack?.({ ok: false, error: "Ntabwo wemerewe kohereza iyi stream." });
+      return;
+    }
+    const room = getRoom(liveClassId);
+    const peerMedia = room?.peers.get(userId);
+    if (!room || !peerMedia?.sendTransport) {
+      ack?.({ ok: false, error: "Ntabwo transport iraboneka." });
+      return;
+    }
+    const producer = await peerMedia.sendTransport.produce({ kind: mediaKind, rtpParameters });
+    // Replacing an existing producer of the same tag (e.g. mic re-enabled
+    // after being toggled off) rather than accumulating stale ones.
+    const previous = peerMedia.producers.get(mediaTag);
+    if (previous && !previous.closed) previous.close();
+    peerMedia.producers.set(mediaTag, producer);
+
+    producer.on("transportclose", () => peerMedia.producers.delete(mediaTag));
+
+    socket.to(`class:${liveClassId}`).emit("media:new-producer", {
+      fromUserId: userId,
+      producerId: producer.id,
+      mediaTag,
+    });
+    ack?.({ ok: true, producerId: producer.id });
+  });
+
+  socket.on("media:close-producer", ({ liveClassId, kind }) => {
+    const room = getRoom(liveClassId);
+    const peerMedia = room?.peers.get(userId);
+    const producer = peerMedia?.producers.get(kind as MediaTag);
+    if (!peerMedia || !producer) return;
+    producer.close();
+    peerMedia.producers.delete(kind as MediaTag);
+    io.to(`class:${liveClassId}`).emit("media:producer-closed", { fromUserId: userId, mediaTag: kind });
+  });
+
+  socket.on("media:consume", async ({ liveClassId, producerId, rtpCapabilities }, ack) => {
+    const room = getRoom(liveClassId);
+    if (!currentParticipant(liveClassId) || !room) {
+      ack?.({ ok: false, error: "Isomo ntabwo riraboneka." });
+      return;
+    }
+    if (!room.router.canConsume({ producerId, rtpCapabilities })) {
+      ack?.({ ok: false, error: "Iyi stream ntishobora gukurikiranwa n\'iyi device." });
+      return;
+    }
+    const peerMedia = getOrCreatePeerMedia(room, userId);
+    if (!peerMedia.recvTransport) {
+      ack?.({ ok: false, error: "Ntabwo recv transport iraboneka fungura transport mbere." });
+      return;
+    }
+    // Created paused: the client resumes it explicitly once the track is
+    // attached to an <audio>/<video> element, avoiding a burst of frames
+    // arriving before anything is listening for them.
+    const consumer = await peerMedia.recvTransport.consume({
+      producerId,
+      rtpCapabilities,
+      paused: true,
+    });
+    peerMedia.consumers.set(consumer.id, consumer);
+    consumer.on("transportclose", () => peerMedia.consumers.delete(consumer.id));
+    consumer.on("producerclose", () => {
+      peerMedia.consumers.delete(consumer.id);
+      io.to(socket.id).emit("media:producer-closed", { producerId });
+    });
+
+    ack?.({
+      ok: true,
+      id: consumer.id,
+      producerId,
+      kind: consumer.kind,
+      rtpParameters: consumer.rtpParameters,
+    });
+  });
+
+  socket.on("media:resume-consumer", async ({ liveClassId, consumerId }, ack) => {
+    const room = getRoom(liveClassId);
+    const peerMedia = room?.peers.get(userId);
+    const consumer = peerMedia?.consumers.get(consumerId);
+    if (!consumer) {
+      ack?.({ ok: false, error: "Consumer ntiboneka." });
+      return;
+    }
+    await consumer.resume();
+    ack?.({ ok: true });
   });
 
   socket.on("disconnect", async () => {
@@ -471,6 +626,7 @@ export function registerLiveClassHandlers(io: Server, socket: Socket) {
       data: { leftAt: new Date() },
     });
     await trackEvent(userId, "CLASS_LEAVE", { liveClassId });
+    removePeerMedia(liveClassId, userId);
 
     if (state.hostId === userId) {
       io.to(`class:${liveClassId}`).emit("classroom:host-disconnected", { liveClassId });

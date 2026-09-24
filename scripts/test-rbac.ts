@@ -2,11 +2,11 @@
  * Role & permission assignment correctness test. This is the spec's "RBAC —
  * CRITICAL" section made real: a permission an admin hasn't granted must be
  * unusable by the API regardless of role, and only ADMIN can assign roles
- * and permissions in the first place — not even a fully-permissioned leader.
+ * and permissions in the first place not even a fully-permissioned leader.
  *
  * Run with: npx tsx scripts/test-rbac.ts   (server must be running)
  */
-const API = "http://localhost:4000";
+const API = "https://api.kwegereza.org";
 
 async function login(email: string, password: string) {
   const res = await fetch(`${API}/api/auth/login`, {
@@ -57,7 +57,7 @@ async function main() {
   const catalogAsLeader = await fetch(`${API}/api/admin/permissions-catalog`, {
     headers: authHeaders(leader.token),
   });
-  check("A LEADER (even a highly-permissioned one) cannot read the catalog — admin-only", catalogAsLeader.status === 403);
+  check("A LEADER (even a highly-permissioned one) cannot read the catalog admin-only", catalogAsLeader.status === 403);
 
   console.log("\n=== 2. Register a fresh student, approve them, promote to LEADER ===");
   const email = `rbac.test.${Date.now()}@example.com`;
@@ -69,7 +69,7 @@ async function main() {
   await fetch(`${API}/api/students/${pendingId}/approve`, { method: "POST", headers: authHeaders(leader.token) });
   const student = await login(email, "Khalid@123");
 
-  console.log("\n=== 3. A LEADER (not admin) cannot promote anyone — even with every student permission ===");
+  console.log("\n=== 3. A LEADER (not admin) cannot promote anyone even with every student permission ===");
   const leaderPromoteAttempt = await fetch(`${API}/api/admin/users/${student.user.id}/role`, {
     method: "PATCH",
     headers: authHeaders(leader.token),
@@ -93,7 +93,7 @@ async function main() {
   });
   check("New leader with no permissions is rejected from student.approve-gated route (403)", blindApproveAttempt.status === 403);
 
-  console.log("\n=== 6. Admin grants ONLY classroom.host — not student.approve ===");
+  console.log("\n=== 6. Admin grants ONLY classroom.host not student.approve ===");
   const grantRes = await fetch(`${API}/api/admin/users/${student.user.id}/permissions`, {
     method: "PATCH",
     headers: authHeaders(admin.token),
@@ -118,7 +118,7 @@ async function main() {
   });
   check("Same leader STILL cannot approve students (student.approve was never granted)", stillCannotApprove.status === 403);
 
-  console.log("\n=== 8. Admin demotes the leader back to student — permissions wiped ===");
+  console.log("\n=== 8. Admin demotes the leader back to student permissions wiped ===");
   const demoteRes = await fetch(`${API}/api/admin/users/${student.user.id}/role`, {
     method: "PATCH",
     headers: authHeaders(admin.token),

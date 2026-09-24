@@ -6,7 +6,7 @@ const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
  * Permanently deletes messages older than 30 days from gender rooms only —
  * not from any 1:1 DM, which is unaffected. A whole-gender broadcast room
  * accumulates messages fast (every active student+leader of that gender
- * shares one room), so this is a real deletion, not a soft one — the spec
+ * shares one room), so this is a real deletion, not a soft one the spec
  * says "deleted after a month", and letting a members-only community room
  * grow forever is also just bad for storage/privacy.
  */
@@ -26,11 +26,11 @@ export async function cleanupExpiredGenderRoomMessages(): Promise<number> {
 
 /** Runs the cleanup once immediately (so a fresh deploy doesn't wait a full
  * day before the first pass) and then on a recurring interval. Deliberately
- * a plain setInterval rather than pulling in a cron dependency — one daily
+ * a plain setInterval rather than pulling in a cron dependency one daily
  * task doesn't need a scheduling library, and this keeps the "no unused
  * dependencies" discipline the rest of the backend already follows. */
 export function startGenderRoomCleanupSchedule(): void {
-  const RUN_EVERY_MS = 6 * 60 * 60 * 1000; // every 6h — cheap query, keeps expiry reasonably tight without needing exact-to-the-day precision
+  const RUN_EVERY_MS = 6 * 60 * 60 * 1000; // every 6h cheap query, keeps expiry reasonably tight without needing exact-to-the-day precision
 
   const run = () => {
     cleanupExpiredGenderRoomMessages()

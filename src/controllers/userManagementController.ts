@@ -3,7 +3,7 @@ import type { Request, Response } from "express";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { sendError, sendResponse } from "../utils/apiResponse.js";
 import { prisma } from "../utils/prisma.js";
-import { PERMISSION_CATALOG, sanitizePermissions } from "../utils/permissionCatalog.js";
+import { PERMISSION_CATALOG, sanitizePermissions, parsePermissionsSafely } from "../utils/permissionCatalog.js";
 import { endOpenSessions } from "../utils/activity.js";
 import { notifyUser } from "../utils/notify.js";
 import { getIo } from "../realtime/ioInstance.js";
@@ -19,18 +19,16 @@ function publicUser(u: any) {
     quranLevel: u.quranLevel,
     role: u.role,
     status: u.status,
-    permissions: JSON.parse(u.permissions || "[]"),
+    permissions: parsePermissionsSafely(u.permissions),
     createdAt: u.createdAt,
   };
 }
 
-async function writeAudit(actorId: string, actionType: string, targetId: string, meta: Record<string, unknown> = {}) {
-  await prisma.auditLog.create({ data: { actorId, actionType, targetId, meta: JSON.stringify(meta) } });
-}
+import { writeAudit } from "../utils/auditLog.js";
 
 /**
  * Tells the target user's own open session(s) to silently re-fetch their
- * profile — so a permission/role change (or a block) is reflected in their
+ * profile so a permission/role change (or a block) is reflected in their
  * UI (sidebar, buttons) within seconds, without forcing a full logout.
  * Backend authorization is already live on every request regardless; this
  * only closes the gap between "the backend already enforces the new rule"
@@ -41,18 +39,19 @@ function pingAccountUpdated(userId: string) {
 }
 
 const VALID_GENDERS = new Set(["MALE", "FEMALE"]);
+const VALID_QURAN_LEVELS = new Set(["LEVEL_1", "LEVEL_2", "LEVEL_3"]);
 
 export const getPermissionCatalog = asyncHandler(async (_req: Request, res: Response) => {
   sendResponse(res, 200, PERMISSION_CATALOG);
 });
 
 /**
- * The one genuinely new "Super-Admin can add anyone" capability — creates an
+ * The one genuinely new "Super-Admin can add anyone" capability creates an
  * account directly as ACTIVE, skipping the PENDING approval queue entirely
  * (a super-admin manually creating someone doesn't need to review their own
  * action the way a self-registration does). Can mint STUDENT, LEADER, or
  * ADMIN accounts. Minting another SUPER_ADMIN is deliberately NOT exposed
- * here or anywhere in the API — that stays a seed/direct-database action
+ * here or anywhere in the API that stays a seed/direct-database action
  * only, to keep the blast radius of a compromised super-admin session or a
  * UI bug from ever reaching the very top tier.
  */
@@ -78,7 +77,7 @@ export const createUserByAdmin = asyncHandler(async (req: Request, res: Response
     return;
   }
   if ((role === "LEADER" || customRoleKeys.includes(role)) && !gender) {
-    sendError(res, 422, "Uyu mukoresha agomba kuba afite igitsina cyagenwe — bikoreshwa mu gucunga abanyeshuri.");
+    sendError(res, 422, "Uyu mukoresha agomba kuba afite igitsina cyagenwe bikoreshwa mu Kureberera abanyeshuri.");
     return;
   }
 
@@ -89,6 +88,9 @@ export const createUserByAdmin = asyncHandler(async (req: Request, res: Response
   }
 
   const passwordHash = await bcrypt.hash(password, 12);
+  // ADMIN's power is role-based, not permission-list-based always
+  // force-empty here (same as STUDENT), same as before this policy was
+  // ever made permission-driven for a stretch.
   const safePermissions = role === "STUDENT" || role === "ADMIN" ? [] : sanitizePermissions(permissions);
 
   const user = await prisma.user.create({
@@ -113,7 +115,7 @@ export const createUserByAdmin = asyncHandler(async (req: Request, res: Response
 });
 
 // Whitelisted so `sort` can never become an arbitrary Prisma orderBy field
-// from user input — only columns actually shown in the table are sortable.
+// from user input only columns actually shown in the table are sortable.
 const SORTABLE_FIELDS = new Set(["fullName", "email", "role", "status", "createdAt"]);
 
 export const getUserById = asyncHandler(async (req: Request, res: Response) => {
@@ -211,14 +213,14 @@ export const bulkUpdateUserStatus = asyncHandler(async (req: Request, res: Respo
 // Promote/demote between STUDENT and LEADER (ADMIN actor), or additionally
 // to/from ADMIN (SUPER_ADMIN actor only). Nobody can touch a SUPER_ADMIN
 // account through this endpoint, and only a SUPER_ADMIN can touch an
-// account that currently is — or is becoming — ADMIN.
+// account that currently is or is becoming ADMIN.
 export const updateUserRole = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
   const { role, permissions: explicitPermissions } = req.body ?? {};
   const actorIsSuperAdmin = req.user!.role === "SUPER_ADMIN";
 
   // Any non-system custom role (Secretariat, Accountant, Women's Affairs
-  // Coordinator, ...) is a valid target the exact same way LEADER is — the
+  // Coordinator, ...) is a valid target the exact same way LEADER is the
   // Role table is the source of truth for "what custom roles exist", not a
   // hardcoded list here.
   const customRoles = await prisma.role.findMany({ where: { isSystem: false }, select: { key: true, defaultPermissions: true } });
@@ -264,17 +266,17 @@ export const updateUserRole = asyncHandler(async (req: Request, res: Response) =
   const data: any = { role };
   if (role === "STUDENT" || role === "ADMIN") {
     // STUDENT has no use for a leftover permission list; ADMIN's power is
-    // role-based (see hasPermission), not permission-list-based — either
+    // role-based (see hasPermission), not permission-list-based either
     // way, a stale list here is meaningless noise. Explicit overrides are
     // not honored for these two roles, by design.
     data.permissions = "[]";
   } else if (explicitPermissions !== undefined) {
     // The new combined "assign role + set permissions" flow sends both in
-    // one request — honor exactly what was checked, not a role default.
+    // one request honor exactly what was checked, not a role default.
     data.permissions = JSON.stringify(sanitizePermissions(explicitPermissions));
   } else if (role !== target.role) {
     // Switching to a genuinely different role with no explicit permission
-    // list given — start from that role's own defaults rather than
+    // list given start from that role's own defaults rather than
     // silently inheriting whatever permissions happened to be left over
     // from an unrelated previous role.
     const roleDefaults = customRoles.find((r) => r.key === role)?.defaultPermissions;
@@ -302,8 +304,86 @@ export const updateUserRole = asyncHandler(async (req: Request, res: Response) =
   sendResponse(res, 200, { user: publicUser(updated) }, "Uruhare rwahinduwe neza.");
 });
 
-// Set a leader's full permission set in one call — this IS the "assign
-// role and permission" capability the spec calls out as admin-exclusive.
+/**
+ * Editing someone ELSE's basic info (name/email/phone/kunia/gender) never
+ * had its own action before only role and permissions could be changed.
+ * Gated by the new `users.edit_info` permission a super-admin can grant
+ * this to a LEADER/custom role/ADMIN without also handing them role- or
+ * permission-editing power, which updateUserRole/updateUserPermissions
+ * both require admin-tier for. Same account-tier protections as the rest
+ * of this file: nobody edits a SUPER_ADMIN this way, and only another
+ * SUPER_ADMIN may edit an ADMIN.
+ */
+export const updateUserInfo = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { fullName, email, phone, kunia, gender, quranLevel } = req.body ?? {};
+
+  const target = await prisma.user.findUnique({ where: { id } });
+  if (!target) {
+    sendError(res, 404, "Umukoresha ntaboneka.");
+    return;
+  }
+  if (target.role === "SUPER_ADMIN") {
+    sendError(res, 403, "Ntushobora guhindura amakuru ya Super-Admin.");
+    return;
+  }
+  if (target.role === "ADMIN" && req.user!.role !== "SUPER_ADMIN") {
+    sendError(res, 403, "Ntushobora guhindura amakuru ya Admin.");
+    return;
+  }
+  if (gender !== undefined && gender !== null && !VALID_GENDERS.has(String(gender))) {
+    sendError(res, 422, "Igitsina kigomba kuba MALE cyangwa FEMALE.");
+    return;
+  }
+  if (quranLevel !== undefined && quranLevel !== null && !VALID_QURAN_LEVELS.has(String(quranLevel))) {
+    sendError(res, 422, "Icyiciro kigomba kuba LEVEL_1, LEVEL_2 cyangwa LEVEL_3.");
+    return;
+  }
+
+  const data: any = {};
+  if (fullName !== undefined) {
+    if (!String(fullName).trim()) {
+      sendError(res, 422, "Amazina ntashobora kuba ubusa.");
+      return;
+    }
+    data.fullName = String(fullName).trim();
+  }
+  if (email !== undefined) {
+    const normalized = String(email).trim().toLowerCase();
+    if (!normalized) {
+      sendError(res, 422, "Imeli ntishobora kuba ubusa.");
+      return;
+    }
+    if (normalized !== target.email) {
+      const existing = await prisma.user.findUnique({ where: { email: normalized } });
+      if (existing) {
+        sendError(res, 422, "Iyi email isanzwe ifite konti.");
+        return;
+      }
+    }
+    data.email = normalized;
+  }
+  if (phone !== undefined) data.phone = phone ? String(phone) : null;
+  if (kunia !== undefined) data.kunia = kunia?.trim() ? String(kunia).trim() : null;
+  if (gender !== undefined) data.gender = gender ? String(gender) : null;
+  if (quranLevel !== undefined) data.quranLevel = quranLevel ? String(quranLevel) : null;
+
+  if (Object.keys(data).length === 0) {
+    sendError(res, 422, "Nta makuru watanze yo guhindura.");
+    return;
+  }
+
+  const updated = await prisma.user.update({ where: { id }, data });
+  await writeAudit(req.user!.id, "user.info_edit", id, { fields: Object.keys(data) });
+  pingAccountUpdated(id);
+
+  sendResponse(res, 200, { user: publicUser(updated) }, "Amakuru y'umukoresha yahinduwe neza.");
+});
+
+// Set a user's full permission set in one call. Applies to LEADER and any
+// custom role a super-admin creates ADMIN's access is role-based
+// (always full, see hasPermission) so a permission list here is
+// meaningless for it, and STUDENT/SUPER_ADMIN never take one either.
 export const updateUserPermissions = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
   const target = await prisma.user.findUnique({ where: { id } });
@@ -311,8 +391,8 @@ export const updateUserPermissions = asyncHandler(async (req: Request, res: Resp
     sendError(res, 404, "Umukoresha ntaboneka.");
     return;
   }
-  if (target.role !== "LEADER") {
-    sendError(res, 422, "Uburenganzira bushobora guhabwa gusa abayobozi (LEADER).");
+  if (target.role === "STUDENT" || target.role === "SUPER_ADMIN" || target.role === "ADMIN") {
+    sendError(res, 422, "Uburenganzira ntibushobora guhabwa uyu mukoresha.");
     return;
   }
 
@@ -337,10 +417,10 @@ export const updateUserPermissions = asyncHandler(async (req: Request, res: Resp
   sendResponse(res, 200, { user: publicUser(updated) }, "Uburenganzira bwahinduwe neza.");
 });
 
-// Generalized block/unblock/reject — works for STUDENT or LEADER, and (for a
+// Generalized block/unblock/reject works for STUDENT or LEADER, and (for a
 // SUPER_ADMIN actor only) ADMIN too. This whole controller is mounted behind
 // requireRole("ADMIN", "SUPER_ADMIN"), but a plain ADMIN still can never
-// touch another ADMIN or a SUPER_ADMIN account — that extra guard lives here.
+// touch another ADMIN or a SUPER_ADMIN account that extra guard lives here.
 export const blockAnyUser = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
   if (id === req.user!.id) {
@@ -385,4 +465,68 @@ export const unblockAnyUser = asyncHandler(async (req: Request, res: Response) =
   pingAccountUpdated(id);
 
   sendResponse(res, 200, { user: publicUser(updated) }, "Konti yasubijwe mu bikorwa.");
+});
+
+/**
+ * Permanently deletes a STUDENT account deliberately restricted to
+ * that one role (never LEADER/ADMIN/SUPER_ADMIN through this endpoint;
+ * removing one of those needs a role change first, a much more
+ * deliberate path than the confirm-and-delete flow this backs). This is
+ * real, irreversible deletion, not the status=BLOCKED soft-removal that
+ * already exists elsewhere so it clears every table that could hold a
+ * row referencing this user, in a single transaction, rather than
+ * leaving anything to fail on a stray foreign-key constraint partway
+ * through. AuditLog is the one deliberate exception: its own accountability
+ * trail is never deleted, only detached (targetId nulled see schema,
+ * where that field is nullable specifically for this reason) so a record
+ * of what admin action was taken, and when, survives the account itself.
+ */
+export const deleteStudentAccount = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const target = await prisma.user.findUnique({ where: { id } });
+  if (!target) {
+    sendError(res, 404, "Umukoresha ntaboneka.");
+    return;
+  }
+  if (target.role !== "STUDENT") {
+    sendError(res, 403, "Iyi nzira ikura konti z'abanyeshuri gusa. Hindura uruhare rwe mbere niba ari uwundi muntu.");
+    return;
+  }
+
+  try {
+    await prisma.$transaction([
+      prisma.auditLog.updateMany({ where: { targetId: id }, data: { targetId: null } }),
+      prisma.message.deleteMany({ where: { senderId: id } }),
+      prisma.conversationParticipant.deleteMany({ where: { userId: id } }),
+      prisma.liveClassAttendance.deleteMany({ where: { userId: id } }),
+      prisma.pushSubscription.deleteMany({ where: { userId: id } }),
+      prisma.notification.deleteMany({ where: { userId: id } }),
+      prisma.notificationPreference.deleteMany({ where: { userId: id } }),
+      prisma.session.deleteMany({ where: { userId: id } }),
+      prisma.activityEvent.deleteMany({ where: { userId: id } }),
+      prisma.activityTime.deleteMany({ where: { userId: id } }),
+      prisma.examAttempt.deleteMany({ where: { userId: id } }),
+      prisma.darsPlayEvent.deleteMany({ where: { userId: id } }),
+      prisma.bookActivityEvent.deleteMany({ where: { userId: id } }),
+      prisma.user.delete({ where: { id } }),
+    ]);
+  } catch (err: any) {
+    // A student was, at some point, promoted to a role that lets someone
+    // create content (Dars, Book, Announcement, ...) and then demoted
+    // back that content still exists and this delete correctly
+    // refuses to silently take it down too. Surfacing this clearly beats
+    // either a raw Prisma stack trace or a delete that quietly leaves
+    // orphaned rows behind.
+    if (err?.code === "P2003") {
+      sendError(
+        res,
+        409,
+        "Ntibyashobotse gusiba iyi konti kubera ko ifitanye isano n'ibindi bikorwa (urugero: yigeze kwandika ibintu ku rubuga). Menyesha umuyobozi ukuru."
+      );
+      return;
+    }
+    throw err;
+  }
+
+  sendResponse(res, 200, null, "Konti y'umunyeshuri yasibwe burundu.");
 });

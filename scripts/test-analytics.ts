@@ -6,7 +6,7 @@
  *
  * Run with: npx tsx scripts/test-analytics.ts   (server must be running)
  */
-const API = "http://localhost:4000";
+const API = "https://api.kwegereza.org/";
 
 async function login(email: string, password: string) {
   const res = await fetch(`${API}/api/auth/login`, {
@@ -58,7 +58,7 @@ async function main() {
     headers: authHeaders(host.token),
   });
 
-  console.log("\n=== 2. Student logs in — this must start a real Session and a LOGIN event ===");
+  console.log("\n=== 2. Student logs in this must start a real Session and a LOGIN event ===");
   const loginTime = Date.now();
   const student = await login(studentEmail, "Zainab@123");
   check("Student login succeeds", !!student.token);
@@ -92,7 +92,7 @@ async function main() {
   });
   check("Student is rejected with 403", studentAnalyticsAttempt.status === 403);
 
-  console.log("\n=== 6. Heartbeat, wait ~2.5s, then logout — session duration must reflect real elapsed time ===");
+  console.log("\n=== 6. Heartbeat, wait ~2.5s, then logout session duration must reflect real elapsed time ===");
   await fetch(`${API}/api/activity/heartbeat`, { method: "POST", headers: authHeaders(student.token) });
   await new Promise((r) => setTimeout(r, 2500));
   await fetch(`${API}/api/auth/logout`, { method: "POST", headers: authHeaders(student.token) });
@@ -113,7 +113,7 @@ async function main() {
   check("Event counts include exactly 1 BOOK_DOWNLOAD", detailRes.data.eventCounts.BOOK_DOWNLOAD === 1);
   check("No fabricated MOUSE_MOVED_A_LOT entry made it through", detailRes.data.eventCounts.MOUSE_MOVED_A_LOT === undefined);
 
-  console.log("\n=== 8. Leader reads the overview (lifetime range) — real aggregate counts ===");
+  console.log("\n=== 8. Leader reads the overview (lifetime range) real aggregate counts ===");
   const overviewRes = await fetch(`${API}/api/analytics/overview?range=lifetime`, {
     headers: authHeaders(host.token),
   }).then((r) => r.json());

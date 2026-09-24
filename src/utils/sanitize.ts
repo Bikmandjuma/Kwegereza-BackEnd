@@ -1,10 +1,10 @@
 /**
- * Lightweight sanitizer for rich-text HTML coming out of the Ifaida editor.
+ * Lightweight sanitizer for rich-text HTML coming out of the ifaida editor.
  *
  * HONEST LIMITATION: this is a regex-based stripper, not a full HTML-parser
- * sanitizer (like DOMPurify). It removes the highest-risk vectors — <script>
+ * sanitizer (like DOMPurify). It removes the highest-risk vectors <script>
  * tags, inline event handlers (onclick=, onerror=, ...), and javascript:
- * URLs — which covers the realistic threat surface for content typed through
+ * URLs which covers the realistic threat surface for content typed through
  * our own toolbar-driven editor. It is NOT a substitute for a proper
  * allow-list HTML sanitizer if this editor ever accepts pasted/arbitrary
  * external HTML at scale; that would be the right next hardening step.

@@ -4,7 +4,7 @@ import { sendResponse } from "../utils/apiResponse.js";
 import { prisma } from "../utils/prisma.js";
 
 /** One aggregate query the public search modal calls as the person types.
- * Every source here is real data (published only) — no mock/sample results. */
+ * Every source here is real data (published only) no mock/sample results. */
 export const search = asyncHandler(async (req: Request, res: Response) => {
   const q = String(req.query.q ?? "").trim();
   if (q.length < 2) {

@@ -4,7 +4,7 @@ import { sendError, sendResponse } from "../utils/apiResponse.js";
 import { prisma } from "../utils/prisma.js";
 import { categoryForType, CONFIGURABLE_CATEGORIES } from "../utils/notify.js";
 
-// Bell dropdown: last 30, unread count only — kept exactly as before so the
+// Bell dropdown: last 30, unread count only kept exactly as before so the
 // bell keeps working with zero changes on that call site.
 export const listNotifications = asyncHandler(async (req: Request, res: Response) => {
   const [notifications, unreadCount] = await Promise.all([
@@ -19,7 +19,7 @@ export const listNotifications = asyncHandler(async (req: Request, res: Response
 });
 
 // Full Notification Center page: paginated history with a category filter —
-// "Ubutumwa" from the spec (Chat/Dars/Ifaida/Live Class/Books/Exams/
+// "Ubutumwa" from the spec (Chat/Dars/ifaida/Live Class/Books/Exams/
 // Announcements/Account/System, unread count, read/unread, history).
 export const listNotificationHistory = asyncHandler(async (req: Request, res: Response) => {
   const page = Math.max(1, Number(req.query.page) || 1);
@@ -62,7 +62,7 @@ export const getNotificationPreferences = asyncHandler(async (req: Request, res:
 export const updateNotificationPreferences = asyncHandler(async (req: Request, res: Response) => {
   const { category, enabled, push } = req.body ?? {};
   if (!CONFIGURABLE_CATEGORIES.includes(category)) {
-    sendError(res, 422, "Iyi category ntabwo ihindurwa — ni ingenzi ku mutekano wa konti yawe.");
+    sendError(res, 422, "Iyi category ntabwo ihindurwa ni ingenzi ku mutekano wa konti yawe.");
     return;
   }
   const updated = await prisma.notificationPreference.upsert({

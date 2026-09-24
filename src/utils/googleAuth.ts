@@ -1,6 +1,6 @@
 import { OAuth2Client } from "google-auth-library";
 
-// A placeholder Client ID is intentionally the default here — the backend
+// A placeholder Client ID is intentionally the default here the backend
 // still starts and every other feature keeps working, but any call to
 // verifyGoogleIdToken() will fail loudly (not silently accept anything)
 // until a real GOOGLE_CLIENT_ID from Google Cloud Console is set in .env.
@@ -22,7 +22,7 @@ export function isGoogleConfigured(): boolean {
 }
 
 /** Verifies the ID token's signature, audience, and expiry with Google's own
- * public keys — this is real verification, not just decoding the JWT payload. */
+ * public keys this is real verification, not just decoding the JWT payload. */
 export async function verifyGoogleIdToken(idToken: string): Promise<GoogleProfile> {
   if (IS_PLACEHOLDER) {
     throw new Error(

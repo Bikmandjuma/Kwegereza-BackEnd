@@ -5,10 +5,12 @@ import { prisma } from "../utils/prisma.js";
 import { registerLiveClassHandlers } from "./liveClass.js";
 import { setIo } from "./ioInstance.js";
 import { notifyUser } from "../utils/notify.js";
+import { isCrossGenderBlocked } from "../utils/genderScope.js";
+import { hasPermission } from "../utils/permissions.js";
 
 // userId -> set of live socket ids for that user (supports multiple devices/tabs).
 // This is the in-memory presence store. In production this becomes Redis so it
-// survives across multiple server instances — the interface stays identical.
+// survives across multiple server instances the interface stays identical.
 const onlineUsers = new Map<string, Set<string>>();
 
 function publicMessage(m: any) {
@@ -27,7 +29,7 @@ function publicMessage(m: any) {
 export function initSocket(httpServer: HttpServer) {
   const io = new Server(httpServer, {
     cors: {
-      origin: process.env.CORS_ORIGIN ?? "http://localhost:5173",
+      origin: process.env.CORS_ORIGIN ?? "https://kwegereza.org",
       credentials: true,
     },
   });
@@ -50,6 +52,7 @@ export function initSocket(httpServer: HttpServer) {
       socket.data.userId = user.id;
       socket.data.fullName = user.fullName;
       socket.data.accountRole = user.role;
+      socket.data.gender = user.gender;
       next();
     } catch {
       next(new Error("unauthenticated"));
@@ -58,6 +61,8 @@ export function initSocket(httpServer: HttpServer) {
 
   io.on("connection", (socket: Socket) => {
     const userId: string = socket.data.userId;
+    const fullName: string = socket.data.fullName;
+    const accountRole: string = socket.data.accountRole;
 
     // ---- presence: mark online ----
     if (!onlineUsers.has(userId)) onlineUsers.set(userId, new Set());
@@ -65,11 +70,51 @@ export function initSocket(httpServer: HttpServer) {
     onlineUsers.get(userId)!.add(socket.id);
     socket.join(`user:${userId}`);
 
-    if (wasOffline) {
-      io.emit("presence:update", { userId, online: true });
+    // A GUEST-role connection is a temporary chat session, not a real
+    // account signing in it gets its own "guest joined" announcement
+    // (see publicStatsController.ts's recordVisit) rather than being
+    // folded into this one, which is meant to read as "a real person on
+    // the team just came online", not "someone opened the guest chat box".
+    //
+    // .except(`user:${userId}`) rather than io.emit(...) otherwise the
+    // person who just logged in would see a toast telling THEMSELVES
+    // they're online, and so would any of their OTHER already-open tabs
+    // or devices (everyone sharing this same user:{id} room). This is
+    // meant to announce someone else joining, not echo a login back to
+    // the person who just performed it.
+    if (wasOffline && accountRole !== "GUEST") {
+      socket.broadcast.except(`user:${userId}`).emit("presence:update", { userId, fullName, online: true });
     }
 
     registerLiveClassHandlers(io, socket);
+
+    // ---- guest chat: staff-side room join ----
+    // Guest conversations themselves live on a separate, unauthenticated
+    // namespace (see initGuestChatSocket below) since a guest has no JWT
+    // to pass this connection's own auth middleware. Staff, already
+    // authenticated right here, just need to join a shared broadcast room
+    // to receive "a guest sent something" pushes re-checked against the
+    // database on every join attempt, never trusted from the token alone,
+    // same discipline as everywhere else permissions are checked in this
+    // app (a permission revoked mid-session takes effect immediately).
+    socket.on("guestchat:join-staff", async (_payload, ack) => {
+      const user = await prisma.user.findUnique({ where: { id: userId } });
+      if (!user || !hasPermission(user.role, user.permissions, "guestchat.respond")) {
+        ack?.({ ok: false, error: "Ntushobora kubona ibi biganiro." });
+        return;
+      }
+      socket.join("guest-chat-staff");
+      ack?.({ ok: true });
+    });
+
+    // Staff typing into a guest conversation pushed to the guest's
+    // separate namespace room (see guestChatSocket.ts), not this one.
+    socket.on("guestchat:typing", ({ conversationId }) => {
+      if (conversationId) io.of("/guest-chat").to(`conv:${conversationId}`).emit("guestchat:typing", { conversationId, who: "STAFF" });
+    });
+    socket.on("guestchat:stopped-typing", ({ conversationId }) => {
+      if (conversationId) io.of("/guest-chat").to(`conv:${conversationId}`).emit("guestchat:stopped-typing", { conversationId, who: "STAFF" });
+    });
 
     // ---- conversation:join ----
     // Client must explicitly join a conversation room before it will receive
@@ -102,6 +147,22 @@ export function initSocket(httpServer: HttpServer) {
         return;
       }
 
+      // Defense in depth alongside startConversation's check (chatController.ts):
+      // that one blocks a NEW cross-gender DM from being opened at all, but a
+      // DM created before either side had a gender on file (or before this
+      // rule existed) would otherwise stay open forever. Only applies to
+      // 1:1 DMs gender rooms are already single-gender by construction.
+      const conversation = await prisma.conversation.findUnique({
+        where: { id: conversationId },
+        select: { kind: true, participants: { where: { userId: { not: userId } }, select: { user: true } } },
+      });
+      const otherUser = conversation?.participants[0]?.user;
+      const senderIdentity = { role: accountRole, gender: socket.data.gender };
+      if (conversation?.kind === "DM" && otherUser && isCrossGenderBlocked(senderIdentity, otherUser)) {
+        ack?.({ ok: false, error: "Ntushobora kuganira n'umukoresha w'igitsina kitandukanye." });
+        return;
+      }
+
       let created = true;
       let message;
       try {
@@ -112,7 +173,7 @@ export function initSocket(httpServer: HttpServer) {
       } catch (err: any) {
         // P2002 = unique constraint violation on (senderId, clientMessageId).
         // This is a resubmission (retry, double-click, StrictMode double-fire)
-        // of a message we already stored — fetch and return the ORIGINAL row.
+        // of a message we already stored fetch and return the ORIGINAL row.
         // We do NOT create a second row, and we do NOT broadcast again below.
         if (err.code === "P2002") {
           created = false;
@@ -130,7 +191,7 @@ export function initSocket(httpServer: HttpServer) {
       // Every caller (fresh send or replayed duplicate) gets the same ack.
       ack?.({ ok: true, message: payload, duplicate: !created });
 
-      // The room broadcast happens EXACTLY ONCE per real message — only on
+      // The room broadcast happens EXACTLY ONCE per real message only on
       // the branch that actually inserted a new row. A duplicate submission
       // never causes a second `message:new` event.
       if (created) {
@@ -139,7 +200,7 @@ export function initSocket(httpServer: HttpServer) {
         // Chat notification intelligence: only push to participants who are
         // NOT currently looking at this conversation (i.e. their socket
         // hasn't joined this room). Someone actively viewing the chat
-        // already saw the message arrive in real time — pushing to them too
+        // already saw the message arrive in real time pushing to them too
         // would just be spam.
         const participants = await prisma.conversationParticipant.findMany({
           where: { conversationId, userId: { not: userId } },
@@ -194,7 +255,7 @@ export function initSocket(httpServer: HttpServer) {
         }
       }
       // socket.io removes this socket's room memberships automatically on
-      // disconnect — no manual socket.off() needed here, but if we ever add
+      // disconnect no manual socket.off() needed here, but if we ever add
       // listeners on OTHER emitters (not `socket` itself) inside this handler,
       // those would need explicit teardown too.
     });

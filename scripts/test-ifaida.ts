@@ -1,14 +1,14 @@
 /**
- * Ifaida lifecycle test — the spec's "IFAIDA TEST" section made real: create
+ * ifaida lifecycle test the spec's "ifaida TEST" section made real: create
  * a draft, edit it repeatedly (simulating autosave), verify it stays
  * invisible to the public while a draft, publish it, verify it becomes
- * publicly readable, unpublish it, verify it disappears again — with each
+ * publicly readable, unpublish it, verify it disappears again with each
  * individual action (create/update/delete/publish) gated on its OWN specific
- * permission, not a single blanket "can write Ifaida" flag.
+ * permission, not a single blanket "can write ifaida" flag.
  *
  * Run with: npx tsx scripts/test-ifaida.ts   (server must be running)
  */
-const API = "http://localhost:4000";
+const API = "https://api.kwegereza.org";
 
 async function login(email: string, password: string) {
   const res = await fetch(`${API}/api/auth/login`, {
@@ -93,7 +93,7 @@ async function main() {
 
   console.log("\n=== 4. Simulate autosave: several rapid edits, each a real PATCH (debouncing is a frontend concern) ===");
   const maliciousContent =
-    '<p>Ubu ni Ifaida <b>nziza</b> kuri Kwegereza.</p><script>alert("xss")</script><img src=x onerror="alert(1)">';
+    '<p>Ubu ni ifaida <b>nziza</b> kuri Kwegereza.</p><script>alert("xss")</script><img src=x onerror="alert(1)">';
   const editRes = await fetch(`${API}/api/ifaida/${postId}`, {
     method: "PATCH",
     headers: authHeaders(leader.token),

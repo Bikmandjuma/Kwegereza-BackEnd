@@ -1,4 +1,4 @@
--- Backs the "time spent per activity" student-analytics feature — one row
+-- Backs the "time spent per activity" student-analytics feature one row
 -- per user+category+day, incremented in place rather than one row per
 -- heartbeat, so this stays cheap even at scale.
 CREATE TABLE `ActivityTime` (

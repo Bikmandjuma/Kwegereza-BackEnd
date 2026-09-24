@@ -35,7 +35,7 @@ export async function heartbeatSession(userId: string) {
     await prisma.session.update({ where: { id: open.id }, data: { lastHeartbeatAt: new Date() } });
     return true;
   }
-  // No open session (e.g. server restarted mid-session) — start a fresh one
+  // No open session (e.g. server restarted mid-session) start a fresh one
   // rather than silently doing nothing, so time-tracking self-heals.
   await startSession(userId);
   return true;

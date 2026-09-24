@@ -4,13 +4,13 @@ import { getIo } from "../realtime/ioInstance.js";
 
 // The configurable categories a user can silence from Notification Center
 // preferences. ACCOUNT and SYSTEM notification types are NOT in this map on
-// purpose — categoryForType() returns null for them, and null always fires,
+// purpose categoryForType() returns null for them, and null always fires,
 // which is exactly how "critical account/security notifications can't be
 // disabled" is enforced.
 const TYPE_CATEGORY_PREFIXES: Array<[string, string]> = [
   ["chat.", "CHAT"],
   ["dars.", "DARS"],
-  ["ifaida.", "IFAIDA"],
+  ["ifaida.", "ifaida"],
   ["liveclass.", "LIVE_CLASS"],
   ["book.", "BOOKS"],
   ["exam.", "EXAMS"],
@@ -31,7 +31,7 @@ export interface NotifyInput {
   body: string;
   url?: string;
   // Unique per real-world event. Reusing the same key for the same user is
-  // exactly how "one event = one notification" is enforced — see the DB's
+  // exactly how "one event = one notification" is enforced see the DB's
   // @@unique([userId, eventKey]) constraint on the Notification model.
   eventKey: string;
 }
@@ -45,7 +45,7 @@ export interface NotifyInput {
 export async function notifyUser(input: NotifyInput): Promise<{ created: boolean }> {
   const category = categoryForType(input.type);
 
-  // Category null (ACCOUNT/SYSTEM) always fires — no preference lookup, no
+  // Category null (ACCOUNT/SYSTEM) always fires no preference lookup, no
   // way to opt out, per spec. Otherwise, respect the user's saved choice;
   // absence of a row means "on" (default subscribed).
   let enabled = true;
@@ -77,7 +77,7 @@ export async function notifyUser(input: NotifyInput): Promise<{ created: boolean
     });
   } catch (err: any) {
     if (err.code === "P2002") {
-      // Same event already notified this user — this is a duplicate dispatch
+      // Same event already notified this user this is a duplicate dispatch
       // attempt (retry, duplicate call site), not a new occurrence. Return
       // the existing row and do NOT re-broadcast or re-push.
       created = false;
@@ -92,7 +92,7 @@ export async function notifyUser(input: NotifyInput): Promise<{ created: boolean
   if (created && notification) {
     // In-app realtime delivery (drives the top banner + bell badge live).
     getIo()?.to(`user:${input.userId}`).emit("notification:new", notification);
-    // Real browser push — reaches the user even if the app/tab isn't open.
+    // Real browser push reaches the user even if the app/tab isn't open.
     // Fire-and-forget: a slow/failed push should never block the request
     // that triggered the notification (e.g. an approval action).
     if (pushAllowed) {

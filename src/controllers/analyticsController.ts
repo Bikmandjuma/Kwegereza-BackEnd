@@ -22,7 +22,7 @@ function rangeStart(range: string): Date | null {
 
 /**
  * Real, measured session duration only. A still-open session's duration is
- * approximated as (lastHeartbeatAt - startedAt) — the most recent heartbeat
+ * approximated as (lastHeartbeatAt - startedAt) the most recent heartbeat
  * IS real evidence the user was active until at least that moment, so this
  * is a measured lower bound, not a guess. A closed session uses its stored
  * durationSeconds, computed once at close time from real timestamps.
@@ -39,7 +39,7 @@ function sumSessionSeconds(
 /**
  * Real day-by-day counts for the last 7 calendar days. Bucketed in JS from
  * actual rows rather than a SQL date-trunc, since SQLite (this dev
- * datasource) doesn't have a portable date-trunc Prisma can target — but the
+ * datasource) doesn't have a portable date-trunc Prisma can target but the
  * numbers themselves are 100% real, not sampled or interpolated.
  */
 function buildDailySeries(

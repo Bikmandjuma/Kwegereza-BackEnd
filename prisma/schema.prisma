@@ -1,4 +1,4 @@
-// Kwegereza Islam Umuryango — database schema
+// Kwegereza Islam Umuryango database schema
 // Dev datasource is SQLite (zero-setup, file-based) so this schema is fully
 // testable right now. Switching to Postgres for production is a one-line change:
 //   datasource db { provider = "postgresql"; url = env("DATABASE_URL") }
@@ -26,16 +26,16 @@ model User {
   fullName     String
   email        String        @unique
   phone        String?
-  gender       String? // MALE | FEMALE — asked at registration, not required for existing accounts
+  gender       String? // MALE | FEMALE asked at registration, not required for existing accounts
   kunia        String? // Kunia / teknonym (e.g. "Umm-Ruslaan"), optional
-  ageRange     String? // e.g. "12-20" | "21-30" | "31-45" | "46+" — from registration
-  location     String? // "Aho utuye" — free text, e.g. "Rwanda/Kigali"
-  quranLevel   String? // LEVEL_1 (can already read) | LEVEL_2 (learning to read) | LEVEL_3 (cannot read yet) — derived at registration from the Qur'an-reading question, drives which class track a student is placed in
+  ageRange     String? // e.g. "12-20" | "21-30" | "31-45" | "46+" from registration
+  location     String? // "Aho utuye" free text, e.g. "Rwanda/Kigali"
+  quranLevel   String? // LEVEL_1 (can already read) | LEVEL_2 (learning to read) | LEVEL_3 (cannot read yet) derived at registration from the Qur'an-reading question, drives which class track a student is placed in
   availableDays   String? // free text from registration, e.g. "Kuwa mbere, Kuwa kabiri"
   availableHours  String? // free text from registration, e.g. "Saa 20:00 kugeza Saa 21:00"
   registrationNote String? // optional free-text suggestion/request left at registration
   passwordHash String? // null for Google-only accounts (see googleId below)
-  googleId     String?       @unique // Google "sub" claim — set once, on first Google sign-in/registration
+  googleId     String?       @unique // Google "sub" claim set once, on first Google sign-in/registration
   avatarUrl    String? // Google profile photo, if the account was created/linked via Google
   role         String        @default("STUDENT")
   status       String        @default("PENDING")
@@ -73,7 +73,7 @@ model User {
   activityEvents ActivityEvent[]
   activityTimes  ActivityTime[]
 
-  ifaidaPosts Ifaida[]
+  ifaidaPosts ifaida[]
 
   createdBooks         Book[]         @relation("BookCreatedBy")
   createdDars          Dars[]         @relation("DarsCreatedBy")
@@ -82,20 +82,27 @@ model User {
 
   createdExams  Exam[]        @relation("ExamCreatedBy")
   examAttempts  ExamAttempt[] @relation("ExamAttempts")
+  darsPlayEvents DarsPlayEvent[] @relation("DarsPlayEventUser")
+  bookActivityEvents BookActivityEvent[] @relation("BookActivityEventUser")
+  createdPhotoInsights PhotoInsight[] @relation("PhotoInsightCreatedBy")
+  assignedGuestConversations GuestConversation[] @relation("GuestConversationAssignee")
+  sentGuestMessages GuestMessage[] @relation("GuestMessageSender")
+  createdPlaylists Playlist[] @relation("PlaylistCreatedBy")
 }
 
 // Custom roles (Secretariat, Accountant, Women's Affairs Coordinator, etc.) —
 // User.role can hold any Role.key, not just the four built-in ones
-// (STUDENT/LEADER/ADMIN/SUPER_ADMIN). ADMIN/SUPER_ADMIN stay hardcoded,
-// role-based, full-access tiers (see hasPermission) and are never created
-// or edited through this table — every OTHER role, built-in or custom, is
-// purely permission-list-driven, so a brand new role works correctly the
-// moment it's created with no code changes anywhere else.
+// (STUDENT/LEADER/ADMIN/SUPER_ADMIN). SUPER_ADMIN alone stays a hardcoded,
+// unconditional full-access tier (see hasPermission); ADMIN is a protected
+// account tier (only another SUPER_ADMIN can create/edit one) but its
+// actual capabilities are permission-list-driven exactly like every other
+// role every role, built-in or custom, works correctly the moment it's
+// created with no code changes anywhere else.
 model Role {
   id                 String   @id @default(uuid())
-  key                String   @unique // e.g. "SECRETARIAT" — this is the actual value stored in User.role
+  key                String   @unique // e.g. "SECRETARIAT" this is the actual value stored in User.role
   label              String // display name, e.g. "Sekeretariya"
-  defaultPermissions String   @default("[]") // JSON array — applied when a user is first assigned this role
+  defaultPermissions String   @default("[]") // JSON array applied when a user is first assigned this role
   isSystem           Boolean  @default(false) // true for the 4 built-ins; seeded once, never deletable
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
@@ -114,18 +121,79 @@ model AuditLog {
   createdAt  DateTime @default(now())
 }
 
-// ===================== Ifaida / Dars content (Phase 6) =====================
+// ===================== ifaida / Dars content (Phase 6) =====================
 
-model Ifaida {
+model ifaida {
   id          String    @id @default(uuid())
   title       String
-  description String    @default("")
-  content     String    @default("") // sanitized rich-text HTML from the editor
+  description String    @default("") @db.Text // free-form; VARCHAR(191) silently capped real articles, especially non-Latin scripts
+  content     String    @default("") @db.Text // sanitized rich-text HTML from the editor was VARCHAR(191) by Prisma default, which is nowhere near enough for a real post
   authorId    String
   author      User      @relation(fields: [authorId], references: [id])
   category    String    @default("")
   coverImage  String?
   status      String    @default("DRAFT") // DRAFT | PUBLISHED
+  playlistId  String?
+  playlist    Playlist? @relation("Playlistifaida", fields: [playlistId], references: [id])
+  playlistOrder Int     @default(0)
+  publishedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+/// "Inyungu mu Mafoto" a photo/file-based counterpart to ifaida
+/// ("Inyungu mu Nyandiko"). Same guest-locking and publish/draft pattern
+/// A visitor with no account starting a chat from the public site's
+/// floating widget. `guestToken` (a long random value, stored in the
+/// browser, never a real session/JWT) is how that SAME anonymous browser
+/// re-identifies itself on reload without ever needing an account --
+/// anyone who doesn't have it cannot read or post into this conversation.
+/// `guestGender` feeds the exact same gender-scoping every other part of
+/// this app already uses (see genderScope.ts): a male guest's
+/// conversation is visible to male leaders/admins, and so on ADMIN and
+/// SUPER_ADMIN always see everything, same as elsewhere.
+model GuestConversation {
+  id           String   @id @default(uuid())
+  guestName    String
+  guestGender  String // MALE | FEMALE
+  guestToken   String   @unique
+  status       String   @default("OPEN") // OPEN | CLOSED
+  assignedToId String?
+  assignedTo   User?    @relation("GuestConversationAssignee", fields: [assignedToId], references: [id])
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  messages     GuestMessage[]
+
+  @@index([status])
+  @@index([assignedToId])
+}
+
+model GuestMessage {
+  id             String            @id @default(uuid())
+  conversationId String
+  conversation   GuestConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  senderType     String // GUEST | STAFF
+  senderId       String? // the staff user's id who sent it; null for a GUEST-sent message
+  sender         User?             @relation("GuestMessageSender", fields: [senderId], references: [id])
+  body           String            @db.Text
+  createdAt      DateTime          @default(now())
+
+  @@index([conversationId])
+}
+
+/// as everything else; `image` is a single image/file path, since the
+/// spec asks for one image/file per entry, not a multi-image gallery item.
+model PhotoInsight {
+  id          String    @id @default(uuid())
+  title       String
+  description String    @default("") @db.Text
+  image       String
+  createdById String
+  createdBy   User      @relation("PhotoInsightCreatedBy", fields: [createdById], references: [id])
+  status      String    @default("DRAFT") // DRAFT | PUBLISHED
+  playlistId  String?
+  playlist    Playlist? @relation("PlaylistPhotoInsights", fields: [playlistId], references: [id])
+  playlistOrder Int     @default(0)
   publishedAt DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
@@ -136,10 +204,10 @@ model Ifaida {
 // Honesty constraint carried over from the spec's "no fake numbers" rule:
 // this system only tracks things Kwegereza can actually measure right now —
 // login sessions, chat activity, live-class attendance, book downloads.
-// Video/audio watch-time, exam attempts, and Dars/Ifaida read-time are NOT
+// Video/audio watch-time, exam attempts, and Dars/ifaida read-time are NOT
 // modeled here because those content types don't exist as real backend
 // entities yet (Phase 6 content management). Adding fabricated numbers for
-// them would violate the spec directly — they'll arrive honestly once that
+// them would violate the spec directly they'll arrive honestly once that
 // phase is built.
 
 model Session {
@@ -162,16 +230,16 @@ model ActivityEvent {
 }
 
 // Real per-second time-on-platform, broken down by what the person was
-// actually doing — not just "logged in for N minutes" (Session already
+// actually doing not just "logged in for N minutes" (Session already
 // covers that), but "spent this many seconds on the home page vs. taking
 // exams vs. reading books". One row per user+category+day, incremented in
-// place rather than one row per heartbeat — a student active every day for
+// place rather than one row per heartbeat a student active every day for
 // a year is 365 rows per category, not tens of thousands.
 model ActivityTime {
   id       String   @id @default(uuid())
   userId   String
   user     User     @relation(fields: [userId], references: [id])
-  category String // HOME | ABOUT | EXAM | BOOKS | DARS | LIVE_CLASS | CHAT | IFAIDA | ANNOUNCEMENTS | ADMIN | OTHER
+  category String // HOME | ABOUT | EXAM | BOOKS | DARS | LIVE_CLASS | CHAT | ifaida | ANNOUNCEMENTS | ADMIN | OTHER
   date     DateTime // midnight UTC of the day this bucket represents
   seconds  Int      @default(0)
 
@@ -210,7 +278,7 @@ model Notification {
   @@unique([userId, eventKey])
 }
 
-// One row per (user, category). Absence of a row means "default: on" — a
+// One row per (user, category). Absence of a row means "default: on" a
 // brand-new user is fully subscribed until they explicitly opt out. ACCOUNT
 // and SYSTEM notification types deliberately have NO category here: notify.ts
 // never looks up a preference for them, so they can never be silenced, per
@@ -220,7 +288,7 @@ model NotificationPreference {
   id       String  @id @default(uuid())
   userId   String
   user     User    @relation(fields: [userId], references: [id])
-  category String // CHAT | DARS | IFAIDA | LIVE_CLASS | BOOKS | EXAMS | ANNOUNCEMENTS
+  category String // CHAT | DARS | ifaida | LIVE_CLASS | BOOKS | EXAMS | ANNOUNCEMENTS
   enabled  Boolean @default(true) // master switch: off = no in-app row, no push, no realtime
   push     Boolean @default(true) // finer-grained: still show in-app/bell, but skip OS push
 
@@ -233,14 +301,14 @@ model NotificationPreference {
 // (coming soon) and the public Ibitabo/Amatangazo/Abarimu pages that were
 // reading from static frontend data files.
 
-// A Teacher is a *display profile* — a name, kunia, photo, bio — not
+// A Teacher is a *display profile* a name, kunia, photo, bio not
 // necessarily a login account. Dars entries optionally reference one.
 model Teacher {
   id        String   @id @default(uuid())
   name      String
   kunia     String? // teknonym, e.g. "Abu Ruslaan"
   role      String   @default("") // e.g. "Aqida & Fiqh"
-  bio       String   @default("")
+  bio       String   @default("") @db.Text // was VARCHAR(191); a real teacher bio can easily run longer
   photo     String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -251,34 +319,59 @@ model Teacher {
 model Book {
   id          String    @id @default(uuid())
   title       String
-  description String    @default("")
+  description String    @default("") @db.Text // was VARCHAR(191); a real book description can easily run longer than that
   author      String    @default("")
   category    String    @default("")
-  fileUrl     String // the book file itself (PDF etc.) — object storage path/URL
+  fileUrl     String // the book file itself (PDF etc.) object storage path/URL
   coverImage  String?
   status      String    @default("DRAFT") // DRAFT | PUBLISHED
   downloads   Int       @default(0)
-  views       Int       @default(0) // opened in the in-browser reader — separate from downloads
+  views       Int       @default(0) // opened in the in-browser reader separate from downloads
   shares      Int       @default(0)
+  playlistId  String? // optional: same shared Playlist model Dars already uses, independent of `category`
+  playlist    Playlist? @relation("PlaylistBooks", fields: [playlistId], references: [id])
+  playlistOrder Int     @default(0) // position within its playlist, ascending; meaningless when playlistId is null
   publishedAt DateTime?
   createdById String
   createdBy   User      @relation("BookCreatedBy", fields: [createdById], references: [id])
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
+  activityEvents BookActivityEvent[]
+}
+
+/// One row per time a LOGGED-IN user views, downloads, or shares a book --
+/// same pattern as DarsPlayEvent for Dars. Anonymous activity still
+/// increments Book.views/downloads/shares as before but has no identity
+/// to attribute, so it never creates a row here.
+model BookActivityEvent {
+  id        String   @id @default(uuid())
+  bookId    String
+  book      Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation("BookActivityEventUser", fields: [userId], references: [id], onDelete: Cascade)
+  type      String // VIEW | DOWNLOAD | SHARE
+  createdAt DateTime @default(now())
+
+  @@index([bookId])
+  @@index([userId])
 }
 
 model Dars {
   id          String    @id @default(uuid())
   title       String
   type        String // AUDIO | VIDEO
-  description String    @default("")
+  description String    @default("") @db.Text // was VARCHAR(191); same fix as Book.description
+  category    String    @default("") // free-text topic tag (e.g. "Fiqh", "Hadith", "Seera") lets videos/audio be grouped into playlist-style tabs, same pattern as Book.category
   thumbnail   String?
   status      String    @default("DRAFT") // DRAFT | PUBLISHED
   plays       Int       @default(0)
-  audio       String? // object storage path/URL — required when type = AUDIO
-  youtubeUrl  String? // optional external video link — used when type = VIDEO
+  audio       String? // object storage path/URL required when type = AUDIO
+  youtubeUrl  String? // optional external video link used when type = VIDEO
   teacherId   String?
   teacher     Teacher?  @relation(fields: [teacherId], references: [id])
+  playlistId  String? // optional: this Dars can belong to at most one curated Playlist, in addition to (and independent of) its free-text `category` tab
+  playlist    Playlist? @relation(fields: [playlistId], references: [id])
+  playlistOrder Int     @default(0) // position within its playlist, ascending; meaningless when playlistId is null
   publishedAt DateTime?
   createdById String
   createdBy   User      @relation("DarsCreatedBy", fields: [createdById], references: [id])
@@ -286,12 +379,52 @@ model Dars {
   updatedBy   User?     @relation("DarsUpdatedBy", fields: [updatedById], references: [id])
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
+  playEvents  DarsPlayEvent[]
+}
+
+/// A curated, ordered sequence of Dars (audio or video) an admin builds
+/// explicitly e.g. "Fiqh Playlist: 15 videos in this exact order".
+/// Distinct from Dars.category (a broad topic tab any Dars can carry
+/// without belonging to any playlist): a playlist is opt-in and ordered,
+/// a category is just a filter. Entirely optional a Dars with no
+/// playlistId behaves exactly as it always has.
+model Playlist {
+  id          String   @id @default(uuid())
+  title       String
+  description String   @default("") @db.Text // was VARCHAR(191)
+  thumbnail   String?
+  createdById String
+  createdBy   User     @relation("PlaylistCreatedBy", fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  items       Dars[]
+  books         Book[]         @relation("PlaylistBooks")
+  ifaidaPosts   ifaida[]       @relation("Playlistifaida")
+  photoInsights PhotoInsight[] @relation("PlaylistPhotoInsights")
+}
+
+/// One row per time a LOGGED-IN user opens/plays a Dars (audio or video).
+/// Anonymous plays (including the one free preview per teacher) still
+/// increment Dars.plays as before but have no user to attribute, so they
+/// never create a row here this table is specifically "who watched
+/// this, and how many times", not a raw play-event log.
+model DarsPlayEvent {
+  id           String   @id @default(uuid())
+  darsId       String
+  dars         Dars     @relation(fields: [darsId], references: [id], onDelete: Cascade)
+  userId       String
+  user         User     @relation("DarsPlayEventUser", fields: [userId], references: [id], onDelete: Cascade)
+  watchSeconds Int? // optional: how long they stayed, when the client reports it
+  playedAt     DateTime @default(now())
+
+  @@index([darsId])
+  @@index([userId])
 }
 
 model Announcement {
   id          String    @id @default(uuid())
   title       String
-  body        String    @default("")
+  body        String    @default("") @db.Text // was VARCHAR(191)
   coverImage  String?
   status      String    @default("DRAFT") // DRAFT | PUBLISHED
   publishedAt DateTime?
@@ -302,7 +435,7 @@ model Announcement {
 }
 
 // A meaningful page-load, used for the public site's "Uyu munsi"/"Byose"
-// visit counters. One row per page view — cheap enough to write directly
+// visit counters. One row per page view cheap enough to write directly
 // (unlike heartbeats), and intentionally separate from ActivityEvent since
 // visits include anonymous/guest traffic that has no userId.
 model PageVisit {
@@ -314,8 +447,8 @@ model PageVisit {
 
 // ===================== Exams / Quizzes (Phase 13) =====================
 // Two real, auto-gradeable question types:
-//   MULTIPLE_CHOICE — options carry isCorrect; graded by exact option match.
-//   FILL_BLANK      — QuestionOption rows double as the list of accepted
+//   MULTIPLE_CHOICE options carry isCorrect; graded by exact option match.
+//   FILL_BLANK      QuestionOption rows double as the list of accepted
 //                      answers (isCorrect always true for these rows);
 //                      graded by case/whitespace-insensitive text match
 //                      against any one of them. No "AI grading" pretense —
@@ -324,7 +457,7 @@ model PageVisit {
 model Exam {
   id                  String    @id @default(uuid())
   title               String
-  description         String    @default("")
+  description         String    @default("") @db.Text // was VARCHAR(191)
   category            String    @default("")
   durationMinutes     Int? // null = untimed
   passingScorePercent Int       @default(60)
@@ -434,7 +567,7 @@ model Conversation {
   id        String   @id @default(uuid())
   isGroup   Boolean  @default(false)
   // "DM" (default, existing 1:1 behavior, unchanged) | "GENDER_ROOM" (one
-  // shared room per gender — see chatController.ts getOrCreateGenderRoom).
+  // shared room per gender see chatController.ts getOrCreateGenderRoom).
   // genderScope is null for every DM and "MALE"/"FEMALE" for a gender room.
   // MySQL doesn't treat multiple NULLs as duplicates under a unique index,
   // so this constraint quietly does nothing to the (many) null-genderScope
@@ -472,7 +605,7 @@ model Message {
   // The idempotency key. Every outgoing message carries one, generated by the
   // CLIENT. If the same (senderId, clientMessageId) pair is submitted twice —
   // a network retry, a double-click, React StrictMode double-invoking a
-  // handler — the database's unique constraint makes a second row impossible.
+  // handler the database's unique constraint makes a second row impossible.
   // The server catches that unique-violation and returns the ORIGINAL row
   // instead of creating a duplicate. This is what actually prevents the
   // "one message shows up twice" bug at the source, rather than hiding it

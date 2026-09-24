@@ -17,7 +17,7 @@ const STATUS_MESSAGES: Record<string, string> = {
 /**
  * Verifies the JWT AND re-reads the user from the database on every request.
  * This is deliberate: if an admin blocks a user mid-session, that user's very
- * next request must be rejected — trusting only the token would let a blocked
+ * next request must be rejected trusting only the token would let a blocked
  * user keep working until the token naturally expires.
  */
 export const authenticate = asyncHandler(async (req: Request, res: Response, next: NextFunction) => {
@@ -56,6 +56,36 @@ export const authenticate = asyncHandler(async (req: Request, res: Response, nex
   }
 
   req.user = user;
+  next();
+});
+
+/**
+ * Same JWT/DB checks as authenticate, but never rejects the request --
+ * sets req.user when a valid, active session is present and just calls
+ * next() otherwise. For endpoints that must stay reachable by anonymous
+ * visitors (e.g. the one free preview video/audio per teacher) but still
+ * want to know WHO is calling when they happen to be logged in, such as
+ * recording a per-user watch event alongside the anonymous play counter.
+ */
+export const optionalAuthenticate = asyncHandler(async (req: Request, _res: Response, next: NextFunction) => {
+  const bearer = req.headers.authorization?.startsWith("Bearer ")
+    ? req.headers.authorization.slice(7)
+    : null;
+  const token = bearer ?? req.cookies?.kiu_token ?? null;
+  if (!token) {
+    next();
+    return;
+  }
+  try {
+    const payload = verifyToken(token);
+    const user = await prisma.user.findUnique({ where: { id: payload.sub } });
+    if (user && user.tokenVersion === payload.tokenVersion && user.status === "ACTIVE") {
+      req.user = user;
+    }
+  } catch {
+    // Invalid/expired token on an endpoint that doesn't require one --
+    // just proceed anonymously rather than erroring.
+  }
   next();
 });
 

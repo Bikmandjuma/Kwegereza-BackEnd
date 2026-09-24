@@ -23,7 +23,7 @@ const router = Router();
 
 router.use(authenticate);
 
-// Student: browse + take (any active account — exams are a learning feature,
+// Student: browse + take (any active account exams are a learning feature,
 // not gated behind a special permission, same as chat).
 router.get("/published", listPublished);
 router.get("/:id/take", getExamForTaking);

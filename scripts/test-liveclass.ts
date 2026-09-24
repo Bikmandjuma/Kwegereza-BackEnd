@@ -1,22 +1,22 @@
 /**
- * Live classroom signaling test — this is the spec's "LIVE CLASS TEST" made
+ * Live classroom signaling test this is the spec's "LIVE CLASS TEST" made
  * real at the signaling/state-machine layer: host starts a class, a student
  * joins muted, raises a hand, gets approved, gets muted-all'd, gets removed,
- * and the class is ended — with the server as the single source of truth at
+ * and the class is ended with the server as the single source of truth at
  * every step.
  *
  * IMPORTANT HONESTY NOTE: this verifies the SIGNALING PROTOCOL and permission
- * state machine — not actual audio. Real microphone/speaker audio can only be
+ * state machine not actual audio. Real microphone/speaker audio can only be
  * verified in an actual browser with real hardware, which this script can't
  * do. The WebRTC offer/answer/ICE relay is tested here as opaque payloads
  * (fake SDP strings) to confirm the server routes them to the right socket
- * and enforces the host-hub topology — not that real audio flows.
+ * and enforces the host-hub topology not that real audio flows.
  *
  * Run with: npx tsx scripts/test-liveclass.ts   (server must be running)
  */
 import { io as ioClient, type Socket } from "socket.io-client";
 
-const API = "http://localhost:4000";
+const API = "https://api.kwegereza.org";
 
 async function login(email: string, password: string) {
   const res = await fetch(`${API}/api/auth/login`, {
@@ -83,7 +83,7 @@ async function main() {
 
   const studentEmail = `liveclass.student.${Date.now()}@example.com`;
   await register("Yusuf Testeur", studentEmail, "Yusuf@123");
-  // Approve via the leader's own permission (student.approve) — exercises the
+  // Approve via the leader's own permission (student.approve) exercises the
   // real approval flow rather than pre-seeding an ACTIVE account.
   const pendingList = await fetch(`${API}/api/students/pending?search=${encodeURIComponent(studentEmail)}`, {
     headers: { Authorization: `Bearer ${host.token}` },
@@ -100,7 +100,7 @@ async function main() {
   const createRes = await fetch(`${API}/api/live-classes`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${host.token}` },
-    body: JSON.stringify({ title: "Aqida — Ustadh Ahmad" }),
+    body: JSON.stringify({ title: "Aqida Ustadh Ahmad" }),
   }).then((r) => r.json());
   check("Class creation succeeds", createRes.success === true);
   check("Class status is LIVE", createRes.data.liveClass.status === "LIVE");
@@ -130,7 +130,7 @@ async function main() {
   check("Student joins MUTED by default (never auto-speaking)", studentJoin.self.micState === "MUTED");
   check("Host is notified of the new participant in realtime", joinedEvent.userId === student.user.id);
 
-  console.log("\n=== 5. Student raises hand — host is notified ===");
+  console.log("\n=== 5. Student raises hand host is notified ===");
   const handRaisedPromise = once(hostSocket, "classroom:hand-raised");
   studentSocket.emit("classroom:raise-hand", { liveClassId });
   const handRaisedEvent = await handRaisedPromise;

@@ -3,8 +3,9 @@ import { asyncHandler } from "../middleware/asyncHandler.js";
 import { sendError, sendResponse } from "../utils/apiResponse.js";
 import { prisma } from "../utils/prisma.js";
 import { deleteUploadedFile, publicUrlFor, verifySignatureOrThrow } from "../utils/storage.js";
+import { longTextError } from "../utils/validateText.js";
 
-/** Every count here is real — grouped straight from the Dars table, not estimated. */
+/** Every count here is real grouped straight from the Dars table, not estimated. */
 export const listPublic = asyncHandler(async (_req: Request, res: Response) => {
   const [teachers, counts] = await Promise.all([
     prisma.teacher.findMany({ orderBy: { name: "asc" } }),
@@ -62,6 +63,11 @@ export const createTeacher = asyncHandler(async (req: Request, res: Response) =>
     sendError(res, 422, "Uzuza amazina y'umwarimu.");
     return;
   }
+  const bioErr = longTextError(bio, "Bio");
+  if (bioErr) {
+    sendError(res, 422, bioErr);
+    return;
+  }
   try {
     if (photoUpload) verifySignatureOrThrow("images", photoUpload.path);
   } catch (err: any) {
@@ -90,6 +96,11 @@ export const updateTeacher = asyncHandler(async (req: Request, res: Response) =>
 
   const { name, kunia, role, bio } = req.body ?? {};
   const photoUpload = (req.files as Record<string, Express.Multer.File[]> | undefined)?.photo?.[0];
+  const bioErr = longTextError(bio, "Bio");
+  if (bioErr) {
+    sendError(res, 422, bioErr);
+    return;
+  }
   try {
     if (photoUpload) verifySignatureOrThrow("images", photoUpload.path);
   } catch (err: any) {
@@ -119,7 +130,7 @@ export const deleteTeacher = asyncHandler(async (req: Request, res: Response) =>
   }
   const darsCount = await prisma.dars.count({ where: { teacherId: teacher.id } });
   if (darsCount > 0) {
-    sendError(res, 422, `Ntushobora gusiba uyu mwarimu — afite Dars ${darsCount} zimuhuje. Zimure cyangwa uzisibe mbere.`);
+    sendError(res, 422, `Ntushobora gusiba uyu mwarimu afite Dars ${darsCount} zimuhuje. Zimure cyangwa uzisibe mbere.`);
     return;
   }
   await prisma.teacher.delete({ where: { id: teacher.id } });

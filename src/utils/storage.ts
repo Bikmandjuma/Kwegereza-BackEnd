@@ -7,10 +7,10 @@ import type { Request } from "express";
 // ===================== Storage abstraction =====================
 // Dev/production-cheap default: local disk under /uploads, served statically
 // by app.ts. The spec calls for "S3-compatible object storage" in production
-// and explicitly says not to store large media files in the database — this
+// and explicitly says not to store large media files in the database this
 // file is the one place that would change to point at an S3-compatible
 // bucket (Cloudflare R2 has a genuinely free tier and speaks the S3 API, so
-// it's a good fit if/when this needs to move off local disk — no code
+// it's a good fit if/when this needs to move off local disk no code
 // outside this file needs to know which backend is used).
 
 export const UPLOADS_DIR = path.join(process.cwd(), "uploads");
@@ -27,7 +27,7 @@ const ALLOWED: Record<Category, { mime: RegExp; ext: string[]; maxBytes: number 
   documents: { mime: /^application\/pdf$/, ext: [".pdf"], maxBytes: 40 * 1024 * 1024 },
 };
 
-// Real magic-byte sniffing — a renamed .exe with a .pdf extension and a
+// Real magic-byte sniffing a renamed .exe with a .pdf extension and a
 // forged Content-Type header still gets caught here, since this reads the
 // actual first bytes of the file rather than trusting client-supplied metadata.
 const SIGNATURES: Record<Category, (buf: Buffer) => boolean> = {
@@ -110,7 +110,7 @@ export function makeUploader(category: Category) {
   });
 }
 
-/** Call after multer has saved the file — verifies real file-signature bytes match the declared category, deleting the file and throwing if not. */
+/** Call after multer has saved the file verifies real file-signature bytes match the declared category, deleting the file and throwing if not. */
 export function verifySignatureOrThrow(category: Category, savedPath: string) {
   const fd = fs.openSync(savedPath, "r");
   const buf = Buffer.alloc(16);
@@ -130,6 +130,6 @@ export function deleteUploadedFile(publicUrl: string | null | undefined) {
   if (!publicUrl || !publicUrl.startsWith("/uploads/")) return;
   const full = path.join(process.cwd(), publicUrl);
   fs.unlink(full, () => {
-    /* best-effort — a missing file here is not worth failing the request over */
+    /* best-effort a missing file here is not worth failing the request over */
   });
 }

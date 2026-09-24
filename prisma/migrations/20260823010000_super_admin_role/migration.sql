@@ -1,4 +1,4 @@
--- SUPER_ADMIN is a new value for the existing `role` string column — no
+-- SUPER_ADMIN is a new value for the existing `role` string column no
 -- schema change needed, `role` was always a free-form VARCHAR. This
 -- migration only *promotes data*: it upgrades the one specific, known
 -- seeded admin account (admin@kwegereza.rw) to SUPER_ADMIN so the new

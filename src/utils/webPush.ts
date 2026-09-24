@@ -8,7 +8,7 @@ const subject = process.env.VAPID_SUBJECT ?? "mailto:admin@example.com";
 if (publicKey && privateKey) {
   webpush.setVapidDetails(subject, publicKey, privateKey);
 } else {
-  console.warn("[push] VAPID keys not set — browser push notifications are disabled.");
+  console.warn("[push] VAPID keys not set browser push notifications are disabled.");
 }
 
 export function getVapidPublicKey(): string | null {
@@ -17,7 +17,7 @@ export function getVapidPublicKey(): string | null {
 
 /**
  * Sends a real Web Push message to every device this user has subscribed
- * from. Never fakes success — if VAPID isn't configured, or the user has no
+ * from. Never fakes success if VAPID isn't configured, or the user has no
  * subscriptions, it does nothing and says so. Expired/invalid subscriptions
  * (the push service returns 404/410) are cleaned up automatically so they
  * don't keep failing silently forever.

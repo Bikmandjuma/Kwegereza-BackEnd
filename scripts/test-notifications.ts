@@ -7,7 +7,7 @@
  *  - that a real event (student approval, live class started) actually fires
  *    a notification end-to-end, not just that the utility function works
  *
- * HONESTY NOTE: a fake subscription payload cannot receive a real push — a
+ * HONESTY NOTE: a fake subscription payload cannot receive a real push a
  * real push endpoint only exists once an actual browser calls
  * pushManager.subscribe(), which requires a real browser context. This test
  * proves the subscription is stored/validated/removed correctly and that
@@ -20,7 +20,7 @@
 import { io as ioClient, type Socket } from "socket.io-client";
 import { PrismaClient } from "@prisma/client";
 
-const API = "http://localhost:4000";
+const API = "https://api.kwegereza.org";
 const prisma = new PrismaClient();
 
 async function login(email: string, password: string) {
@@ -172,11 +172,11 @@ async function main() {
   const createClassRes = await fetch(`${API}/api/live-classes`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${host.token}` },
-    body: JSON.stringify({ title: "Tajwiid — Ustadh Bilal" }),
+    body: JSON.stringify({ title: "Tajwiid Ustadh Bilal" }),
   }).then((r) => r.json());
   const liveNotif = await notifPromise;
   check("Student receives a live notification:new event for the class starting", liveNotif.type === "liveclass.started");
-  check("Notification body matches the class title", liveNotif.body === "Tajwiid — Ustadh Bilal");
+  check("Notification body matches the class title", liveNotif.body === "Tajwiid Ustadh Bilal");
 
   await fetch(`${API}/api/live-classes/${createClassRes.data.liveClass.id}/end`, {
     method: "POST",

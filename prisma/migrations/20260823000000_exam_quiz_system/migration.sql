@@ -1,7 +1,7 @@
 -- The Exam/Question/QuestionOption/ExamAttempt/ExamAnswer models already
 -- existed in schema.prisma (and the controller/routes/frontend built on
 -- top of them), but no migration ever created these tables in the real
--- database — this was pure schema drift. Every exam endpoint would have
+-- database this was pure schema drift. Every exam endpoint would have
 -- failed at runtime with "table `Exam` doesn't exist" the moment it was
 -- actually used. This migration is that missing piece.
 

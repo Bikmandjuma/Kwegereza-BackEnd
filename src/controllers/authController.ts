@@ -5,7 +5,9 @@ import { sendError, sendResponse } from "../utils/apiResponse.js";
 import { signToken, verifyToken } from "../utils/jwt.js";
 import { prisma } from "../utils/prisma.js";
 import { endOpenSessions, startSession, trackEvent } from "../utils/activity.js";
+import { parsePermissionsSafely } from "../utils/permissionCatalog.js";
 import { verifyGoogleIdToken } from "../utils/googleAuth.js";
+import { deleteUploadedFile, publicUrlFor, verifySignatureOrThrow } from "../utils/storage.js";
 
 const STATUS_MESSAGES: Record<string, string> = {
   PENDING: "Konti yawe iri gutegereza kwemezwa n'ubuyobozi.",
@@ -49,7 +51,7 @@ function publicUser(user: {
     hasPassword: Boolean(user.passwordHash), // lets the frontend hide "change password" for Google-only accounts
     role: user.role,
     status: user.status,
-    permissions: JSON.parse(user.permissions || "[]"),
+    permissions: parsePermissionsSafely(user.permissions),
     createdAt: user.createdAt,
   };
 }
@@ -57,9 +59,9 @@ function publicUser(user: {
 const VALID_GENDERS = new Set(["MALE", "FEMALE"]);
 
 const QURAN_READING_TO_LEVEL: Record<string, string> = {
-  KNOWS: "LEVEL_1", // "Nzi gusoma gusa" — already reads Qur'an
-  TRYING: "LEVEL_2", // "Ngerageza gusoma" — learning to read
-  NONE: "LEVEL_3", // "Ntabyo nzi" — doesn't know yet
+  KNOWS: "LEVEL_1", // "Nzi gusoma gusa" already reads Qur'an
+  TRYING: "LEVEL_2", // "Ngerageza gusoma" learning to read
+  NONE: "LEVEL_3", // "Ntabyo nzi" doesn't know yet
 };
 
 export const register = asyncHandler(async (req: Request, res: Response) => {
@@ -79,7 +81,7 @@ export const register = asyncHandler(async (req: Request, res: Response) => {
     agreedToRules,
   } = req.body ?? {};
 
-  // No password field at all — per the new registration flow, a student's
+  // No password field at all per the new registration flow, a student's
   // password is their own WhatsApp number, communicated to them by email
   // the moment a leader approves the account (see approveStudent). That
   // means phone is no longer optional here: it IS the credential.
@@ -129,7 +131,7 @@ export const register = asyncHandler(async (req: Request, res: Response) => {
     },
   });
 
-  // Registration NEVER grants an active session — status is PENDING until a
+  // Registration NEVER grants an active session status is PENDING until a
   // leader/admin approves. The frontend routes PENDING users to a waiting screen.
   sendResponse(
     res,
@@ -195,7 +197,7 @@ export const logout = asyncHandler(async (req: Request, res: Response) => {
       await endOpenSessions(payload.sub);
       await trackEvent(payload.sub, "LOGOUT");
     } catch {
-      // Token invalid/expired — nothing to close, that's fine.
+      // Token invalid/expired nothing to close, that's fine.
     }
   }
 
@@ -205,7 +207,7 @@ export const logout = asyncHandler(async (req: Request, res: Response) => {
 
 /**
  * One endpoint handles both "Iyandikishe ukoresheje Google" (register) and
- * "Injira na Google" (login) — Google gives us a verified email either way,
+ * "Injira na Google" (login) Google gives us a verified email either way,
  * so the branch is: existing googleId -> log in; existing email without a
  * googleId -> link Google to that account; neither -> create a brand-new
  * PENDING account, identical approval flow to a normal registration. Google
@@ -231,7 +233,7 @@ export const googleAuth = asyncHandler(async (req: Request, res: Response) => {
   if (!user) {
     const existingByEmail = await prisma.user.findUnique({ where: { email: profile.email } });
     if (existingByEmail) {
-      // Same person, previously registered with a password — link the accounts
+      // Same person, previously registered with a password link the accounts
       // rather than creating a confusing duplicate.
       user = await prisma.user.update({
         where: { id: existingByEmail.id },
@@ -240,7 +242,7 @@ export const googleAuth = asyncHandler(async (req: Request, res: Response) => {
     } else {
       // A brand-new Google signup skips the manual wizard entirely, so the
       // frontend collects the same "which class level" info in a short
-      // pre-step and sends it here, bundled into this one request — there's
+      // pre-step and sends it here, bundled into this one request there's
       // no separate authenticated call it could make afterward, since a
       // PENDING account is never issued a token (see below).
       const level = QURAN_READING_TO_LEVEL[quranReading];
@@ -266,7 +268,7 @@ export const googleAuth = asyncHandler(async (req: Request, res: Response) => {
   }
 
   if (user.status !== "ACTIVE") {
-    // Same response shape as a fresh registration/blocked login — the
+    // Same response shape as a fresh registration/blocked login the
     // frontend already knows how to route PENDING/BLOCKED/etc. from this.
     sendResponse(
       res,
@@ -284,4 +286,80 @@ export const googleAuth = asyncHandler(async (req: Request, res: Response) => {
   await trackEvent(user.id, "LOGIN");
 
   sendResponse(res, 200, { user: publicUser(user), token }, "Kwinjira na Google byagenze neza.");
+});
+
+/**
+ * Self-service profile update fullName, phone, and/or a new avatar
+ * image, for the CURRENTLY logged-in user only (never another account;
+ * that's userManagementController.ts's updateUserInfo, a separate,
+ * admin-only action). No permission gate beyond being authenticated --
+ * everyone can edit their own basic info and photo.
+ */
+export const updateMyProfile = asyncHandler(async (req: Request, res: Response) => {
+  const { fullName, phone } = req.body ?? {};
+  const files = req.files as Record<string, Express.Multer.File[]> | undefined;
+  const avatarUpload = files?.avatar?.[0];
+
+  const data: any = {};
+  if (fullName !== undefined && String(fullName).trim()) data.fullName = String(fullName).trim();
+  if (phone !== undefined) data.phone = phone ? String(phone).trim() : null;
+
+  if (avatarUpload) {
+    try {
+      verifySignatureOrThrow("images", avatarUpload.path);
+    } catch (err: any) {
+      sendError(res, 422, err.message);
+      return;
+    }
+    const oldAvatar = req.user!.avatarUrl;
+    data.avatarUrl = publicUrlFor("images", avatarUpload.filename);
+    // Only clean up an avatar THIS app previously stored a Google
+    // profile photo URL points at Google's own servers, never a local
+    // upload, and must never be passed to a local-file deletion helper.
+    if (oldAvatar && oldAvatar.includes("/uploads/")) deleteUploadedFile(oldAvatar);
+  }
+
+  const updated = await prisma.user.update({ where: { id: req.user!.id }, data });
+  sendResponse(res, 200, { user: publicUser(updated) }, "Amakuru yawe yahinduwe.");
+});
+
+/**
+ * Requires the CURRENT password to change it (never trust "I'm logged in"
+ * alone for this a stolen/left-open session shouldn't be enough to
+ * lock the real owner out). Bumps tokenVersion so every OTHER active
+ * session is invalidated the moment a password changes, same security
+ * posture as blocking a user elsewhere in this app but immediately
+ * issues this session a fresh token with the new tokenVersion so the
+ * person making the change isn't logged out of their own action.
+ */
+export const changeMyPassword = asyncHandler(async (req: Request, res: Response) => {
+  const { currentPassword, newPassword } = req.body ?? {};
+  const user = await prisma.user.findUnique({ where: { id: req.user!.id } });
+  if (!user) {
+    sendError(res, 404, "Umukoresha ntaboneka.");
+    return;
+  }
+  if (!user.passwordHash) {
+    sendError(res, 422, "Iyi konti yinjira gusa binyuze kuri Google, nta jambo ry'ibanga rihari ryo guhindura.");
+    return;
+  }
+  if (!String(newPassword ?? "").trim() || String(newPassword).length < 6) {
+    sendError(res, 422, "Ijambo ry'ibanga rishya rigomba kuba nibura inyuguti 6.");
+    return;
+  }
+  const valid = await bcrypt.compare(String(currentPassword ?? ""), user.passwordHash);
+  if (!valid) {
+    sendError(res, 401, "Ijambo ry'ibanga risanzwe si ryo.");
+    return;
+  }
+
+  const passwordHash = await bcrypt.hash(String(newPassword), 12);
+  const updated = await prisma.user.update({
+    where: { id: user.id },
+    data: { passwordHash, tokenVersion: { increment: 1 } },
+  });
+
+  const token = signToken({ sub: updated.id, role: updated.role, tokenVersion: updated.tokenVersion });
+  res.cookie("kiu_token", token, COOKIE_OPTIONS);
+  sendResponse(res, 200, { token }, "Ijambo ry'ibanga ryahinduwe.");
 });

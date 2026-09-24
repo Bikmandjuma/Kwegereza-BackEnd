@@ -2,7 +2,7 @@ import type { Request, Response } from "express";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { sendError, sendResponse } from "../utils/apiResponse.js";
 import { prisma } from "../utils/prisma.js";
-import { sanitizePermissions } from "../utils/permissionCatalog.js";
+import { sanitizePermissions, parsePermissionsSafely } from "../utils/permissionCatalog.js";
 
 const KEY_PATTERN = /^[A-Z][A-Z0-9_]{1,31}$/; // e.g. SECRETARIAT, ACCOUNTANT, WOMENS_LEADER
 
@@ -11,7 +11,14 @@ function publicRole(r: any) {
     id: r.id,
     key: r.key,
     label: r.label,
-    defaultPermissions: JSON.parse(r.defaultPermissions || "[]"),
+    // Same class of bug as User.permissions (see userManagementController.ts
+    // and authController.ts) a malformed defaultPermissions value on any
+    // single role row would throw here, and this function runs on every
+    // listRoles() call. That call isn't just RolesManagementPage.jsx's own
+    // page load AssignRolePage.jsx calls it too, to populate the role
+    // picker dropdown. One bad row would have silently broken role
+    // ASSIGNMENT everywhere, not just role management.
+    defaultPermissions: parsePermissionsSafely(r.defaultPermissions),
     isSystem: r.isSystem,
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
@@ -67,14 +74,18 @@ export const updateRole = asyncHandler(async (req: Request, res: Response) => {
     sendError(res, 404, "Uru ruhare ntirubonetse.");
     return;
   }
-  if (role.isSystem) {
-    sendError(res, 403, "Ntushobora guhindura uruhare rusanzwe rwa sisitemu.");
-    return;
-  }
 
   const { label, defaultPermissions } = req.body ?? {};
   const data: any = {};
-  if (label !== undefined) data.label = String(label).trim();
+  // A system role's identity (key, and now label too) stays exactly as
+  // labeled in the UI "STUDENT, LEADER, ADMIN, na SUPER-ADMIN ni
+  // imiterere y'ibanze idashobora guhindurwa cyangwa gusibwa" (cannot be
+  // changed or deleted). What CAN change for them now is their default
+  // permission set specifically a super-admin configuring "what a
+  // LEADER starts with when promoted" is a real, useful action that used
+  // to be blanket-blocked here alongside label/key changes and deletion,
+  // even though only the latter two are what that sentence actually means.
+  if (!role.isSystem && label !== undefined) data.label = String(label).trim();
   if (defaultPermissions !== undefined) data.defaultPermissions = JSON.stringify(sanitizePermissions(defaultPermissions));
 
   const updated = await prisma.role.update({ where: { id: role.id }, data });
@@ -96,7 +107,7 @@ export const deleteRole = asyncHandler(async (req: Request, res: Response) => {
     sendError(
       res,
       422,
-      `Ntushobora gusiba uru ruhare — hari abakoresha ${holderCount} barufite. Bahindure uruhare mbere.`
+      `Ntushobora gusiba uru ruhare hari abakoresha ${holderCount} barufite. Bahindure uruhare mbere.`
     );
     return;
   }

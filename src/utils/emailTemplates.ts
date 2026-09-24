@@ -9,7 +9,7 @@ function baseLayout(bodyHtml: string): string {
           ${bodyHtml}
         </div>
         <div style="padding:16px 28px; background:#f6f4ee; font-size:11px; color:#8a8371;">
-          Kwegereza — urubuga rw'uburezi bwa Islamu.
+          Kwegereza urubuga rw'uburezi bwa Islamu.
         </div>
       </div>
     </div>
@@ -23,7 +23,7 @@ export function approvalEmail(fullName: string, email: string, phone: string | n
       <h2 style="color:#0b3d2e; margin:0 0 12px;">Urakaza neza, ${fullName}!</h2>
       <p style="color:#33463c; line-height:1.6; margin:0 0 16px;">
         Ubuyobozi bwa Kwegereza Islam Umuryango bwemeje ko wiga. Ubu ushobora kwinjira ukoreshe
-        urubuga byuzuye — amasomo, ibitabo, ibizamini, n'ibindi byose.
+        urubuga byuzuye amasomo, ibitabo, ibizamini, n'ibindi byose.
       </p>
       <div style="background:#f6f4ee; border:1px solid #e7e2d5; border-radius:12px; padding:16px 20px; margin:0 0 20px;">
         <p style="color:#33463c; font-weight:700; margin:0 0 8px; font-size:13px;">Uko winjira (login):</p>
@@ -43,7 +43,7 @@ export function approvalEmail(fullName: string, email: string, phone: string | n
 
 export function liveClassEmail(classTitle: string, hostName: string, joinUrl: string) {
   return {
-    subject: `Isomo riri live ubu — ${classTitle}`,
+    subject: `Isomo riri live ubu ${classTitle}`,
     html: baseLayout(`
       <h2 style="color:#0b3d2e; margin:0 0 12px;">Isomo ritangiye ubu!</h2>
       <p style="color:#33463c; line-height:1.6; margin:0 0 20px;">

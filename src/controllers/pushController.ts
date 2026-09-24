@@ -20,7 +20,7 @@ export const subscribe = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
-  // upsert by endpoint — the browser may re-subscribe with the same endpoint
+  // upsert by endpoint the browser may re-subscribe with the same endpoint
   // (e.g. after re-granting permission); this should update, not duplicate.
   await prisma.pushSubscription.upsert({
     where: { endpoint },

@@ -1,15 +1,15 @@
 /**
- * Live chat correctness test — this is the "CHAT TEST" from the spec, run for
+ * Live chat correctness test this is the "CHAT TEST" from the spec, run for
  * real against the running server: two independent socket connections
  * (simulating Browser A and Browser B), exactly one message sent, a deliberate
- * duplicate resubmission, a reconnect, and a fresh history fetch — verifying
+ * duplicate resubmission, a reconnect, and a fresh history fetch verifying
  * at every step that the count is exactly 1, never 2.
  *
  * Run with: npx tsx scripts/test-chat.ts   (server must already be running)
  */
 import { io as ioClient, type Socket } from "socket.io-client";
 
-const API = "http://localhost:4000";
+const API = "https://api.kwegereza.org";
 
 async function login(email: string, password: string) {
   const res = await fetch(`${API}/api/auth/login`, {
@@ -96,7 +96,7 @@ async function main() {
   const sendAck1 = await emitAck(socketA, "message:send", {
     conversationId,
     clientMessageId,
-    body: "Assalamu alaikum — this is the one and only message.",
+    body: "Assalamu alaikum this is the one and only message.",
   });
   const bMsg = await bMessagePromise;
 
@@ -109,9 +109,9 @@ async function main() {
   const sendAck2 = await emitAck(socketA, "message:send", {
     conversationId,
     clientMessageId, // <-- SAME id on purpose
-    body: "Assalamu alaikum — this is the one and only message.",
+    body: "Assalamu alaikum this is the one and only message.",
   });
-  // give the server a moment — if it were (incorrectly) going to double-broadcast, it would happen by now
+  // give the server a moment if it were (incorrectly) going to double-broadcast, it would happen by now
   await new Promise((r) => setTimeout(r, 400));
 
   check("Retry ack ok:true (server still responds, doesn't error)", sendAck2.ok === true);

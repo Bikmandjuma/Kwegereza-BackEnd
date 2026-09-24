@@ -2,6 +2,7 @@ import type { Request, Response } from "express";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { sendError, sendResponse } from "../utils/apiResponse.js";
 import { prisma } from "../utils/prisma.js";
+import { longTextError } from "../utils/validateText.js";
 
 const QUESTION_TYPES = new Set(["MULTIPLE_CHOICE", "FILL_BLANK"]);
 
@@ -24,7 +25,7 @@ function publicExam(e: any) {
   };
 }
 
-/** Parses a scheduledFor value from a request body — accepts an ISO string,
+/** Parses a scheduledFor value from a request body accepts an ISO string,
  * or explicit null/"" to clear it back to "start any time". Returns
  * `undefined` when the field wasn't sent at all, so callers can tell "not
  * provided" apart from "explicitly cleared". Throws a plain Error with a
@@ -77,6 +78,11 @@ export const createExam = asyncHandler(async (req: Request, res: Response) => {
     sendError(res, 422, "Uzuza umutwe w'ikizamini.");
     return;
   }
+  const descErr = longTextError(description, "Ibisobanuro");
+  if (descErr) {
+    sendError(res, 422, descErr);
+    return;
+  }
   let parsedScheduledFor: Date | null | undefined;
   try {
     parsedScheduledFor = parseScheduledFor(scheduledFor);
@@ -98,7 +104,7 @@ export const createExam = asyncHandler(async (req: Request, res: Response) => {
     },
     include: { createdBy: true, _count: { select: { questions: true } } },
   });
-  sendResponse(res, 201, publicExam(exam), "Ikizamini cyongewe (umushinga).");
+  sendResponse(res, 201, publicExam(exam), "Ikizamini cyongewe (by'agategenyo).");
 });
 
 export const updateExam = asyncHandler(async (req: Request, res: Response) => {
@@ -109,6 +115,11 @@ export const updateExam = asyncHandler(async (req: Request, res: Response) => {
   }
   const { title, description, category, durationMinutes, passingScorePercent, allowMultipleAttempts, scheduledFor } =
     req.body ?? {};
+  const descErr = longTextError(description, "Ibisobanuro");
+  if (descErr) {
+    sendError(res, 422, descErr);
+    return;
+  }
 
   const data: any = {};
   if (title !== undefined) data.title = String(title).trim();
@@ -125,7 +136,7 @@ export const updateExam = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
   // Publishing/unpublishing is a separate, dedicated permission (exam.publish)
-  // — see setExamStatus below — so it deliberately doesn't live here even
+  // see setExamStatus below so it deliberately doesn't live here even
   // though the request shape would allow it. Someone granted only
   // "edit exam content" can no longer silently publish a half-finished exam,
   // and someone granted only "publish exams" can't quietly rewrite content.
@@ -138,7 +149,7 @@ export const updateExam = asyncHandler(async (req: Request, res: Response) => {
   sendResponse(res, 200, publicExam(updated), "Bikawe.");
 });
 
-/** Dedicated publish/unpublish action — gated by exam.publish, independent
+/** Dedicated publish/unpublish action gated by exam.publish, independent
  * of exam.update, so the two capabilities can be granted separately. */
 export const setExamStatus = asyncHandler(async (req: Request, res: Response) => {
   const exam = await prisma.exam.findUnique({ where: { id: req.params.id } });
@@ -175,7 +186,7 @@ export const deleteExam = asyncHandler(async (req: Request, res: Response) => {
 });
 
 // ===================== Admin: question builder =====================
-// Full question detail (including correct answers) — admin-only, never
+// Full question detail (including correct answers) admin-only, never
 // served to a student taking the exam (see getExamForTaking below).
 
 export const getExamWithQuestions = asyncHandler(async (req: Request, res: Response) => {
@@ -371,7 +382,7 @@ export const listPublished = asyncHandler(async (req: Request, res: Response) =>
   );
 });
 
-/** Questions WITHOUT correct-answer info — this is what a student sees while taking the exam. */
+/** Questions WITHOUT correct-answer info this is what a student sees while taking the exam. */
 export const getExamForTaking = asyncHandler(async (req: Request, res: Response) => {
   const exam = await prisma.exam.findUnique({
     where: { id: req.params.id },
@@ -401,7 +412,7 @@ export const startAttempt = asyncHandler(async (req: Request, res: Response) => 
     sendError(res, 404, "Iki kizamini ntikiboneka.");
     return;
   }
-  // The REAL gate — a disabled/hidden Start button in the UI is just a
+  // The REAL gate a disabled/hidden Start button in the UI is just a
   // courtesy. Someone could always call this endpoint directly before the
   // scheduled time, so the actual guarantee has to live here.
   if (exam.scheduledFor && exam.scheduledFor.getTime() > Date.now()) {
@@ -418,7 +429,7 @@ export const startAttempt = asyncHandler(async (req: Request, res: Response) => 
     return;
   }
   if (existing?.status === "SUBMITTED" && !exam.allowMultipleAttempts) {
-    sendError(res, 422, "Wamaze gukora iki kizamini — ntikwemerewe kongera.");
+    sendError(res, 422, "Wamaze gukora iki kizamini ntikwemerewe kongera.");
     return;
   }
 
@@ -463,7 +474,7 @@ export const submitAttempt = asyncHandler(async (req: Request, res: Response) =>
       const chosen = q.options.find((o) => o.id === selectedOptionId);
       isCorrect = Boolean(chosen?.isCorrect);
     } else {
-      // FILL_BLANK — real deterministic grading: trim + lowercase match
+      // FILL_BLANK real deterministic grading: trim + lowercase match
       // against any accepted answer stored as a QuestionOption row.
       textAnswer = given?.textAnswer ? String(given.textAnswer) : null;
       const normalized = (textAnswer ?? "").trim().toLowerCase();

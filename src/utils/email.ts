@@ -1,12 +1,12 @@
 import nodemailer from "nodemailer";
 
 // A placeholder-safe default, same discipline as GOOGLE_CLIENT_ID and the
-// VAPID keys — the app starts and every other feature works with these
+// VAPID keys the app starts and every other feature works with these
 // unset; email sending just quietly no-ops (with a console warning) until
 // real Gmail credentials are provided.
 //
 // GMAIL_USER must be a real Gmail address. GMAIL_APP_PASSWORD is NOT your
-// normal Gmail password — Gmail blocks plain-password SMTP login outright.
+// normal Gmail password Gmail blocks plain-password SMTP login outright.
 // You need an "App Password": Google Account -> Security -> 2-Step
 // Verification (must be turned on) -> App passwords -> generate one for
 // "Mail". It's a 16-character code; paste it in as-is (spaces are fine).
@@ -25,10 +25,10 @@ export function isEmailConfigured(): boolean {
   return IS_CONFIGURED;
 }
 
-/** Where email links should point — reuses CORS_ORIGIN since that's already
+/** Where email links should point reuses CORS_ORIGIN since that's already
  * the deployed frontend's real URL, with no separate env var to keep in sync. */
 export function getFrontendUrl(): string {
-  return process.env.CORS_ORIGIN ?? "https://kwegereza-web.up.railway.app";
+  return process.env.CORS_ORIGIN ?? "https://kwegereza.org";
 }
 
 interface SendEmailInput {
@@ -37,11 +37,11 @@ interface SendEmailInput {
   html: string;
 }
 
-/** Never throws — a failed/unconfigured email should never break the
+/** Never throws a failed/unconfigured email should never break the
  * request that triggered it (approving a student, starting a class). */
 export async function sendEmail({ to, subject, html }: SendEmailInput): Promise<{ sent: boolean }> {
   if (!transporter) {
-    console.warn(`[email] GMAIL_USER/GMAIL_APP_PASSWORD not set — skipped "${subject}" to ${to}`);
+    console.warn(`[email] GMAIL_USER/GMAIL_APP_PASSWORD not set skipped "${subject}" to ${to}`);
     return { sent: false };
   }
   try {
@@ -61,7 +61,7 @@ export async function sendEmail({ to, subject, html }: SendEmailInput): Promise<
 
 /**
  * Sends to a whole list of addresses without blocking on all of them at
- * once — Gmail's SMTP connection (and its ~500/day sending limit on a
+ * once Gmail's SMTP connection (and its ~500/day sending limit on a
  * regular, non-Workspace account) doesn't handle a burst of hundreds of
  * simultaneous sends gracefully. Small batches with a short pause between
  * them is friendlier to Gmail and much less likely to get the sending
@@ -72,7 +72,7 @@ export async function sendEmailBatch(
   build: (to: string) => SendEmailInput
 ): Promise<{ sent: number; skipped: number }> {
   if (!transporter) {
-    console.warn(`[email] GMAIL_USER/GMAIL_APP_PASSWORD not set — skipped batch of ${recipients.length}`);
+    console.warn(`[email] GMAIL_USER/GMAIL_APP_PASSWORD not set skipped batch of ${recipients.length}`);
     return { sent: 0, skipped: recipients.length };
   }
 

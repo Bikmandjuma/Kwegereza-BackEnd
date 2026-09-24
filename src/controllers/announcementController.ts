@@ -3,6 +3,8 @@ import { asyncHandler } from "../middleware/asyncHandler.js";
 import { sendError, sendResponse } from "../utils/apiResponse.js";
 import { prisma } from "../utils/prisma.js";
 import { deleteUploadedFile, publicUrlFor, verifySignatureOrThrow } from "../utils/storage.js";
+import { writeAudit } from "../utils/auditLog.js";
+import { longTextError } from "../utils/validateText.js";
 
 function publicAnnouncement(a: any) {
   return {
@@ -78,6 +80,11 @@ export const createAnnouncement = asyncHandler(async (req: Request, res: Respons
     sendError(res, 422, "Uzuza umutwe w'itangazo.");
     return;
   }
+  const bodyErr = longTextError(body, "Ubutumwa");
+  if (bodyErr) {
+    sendError(res, 422, bodyErr);
+    return;
+  }
   try {
     if (coverUpload) verifySignatureOrThrow("images", coverUpload.path);
   } catch (err: any) {
@@ -96,7 +103,8 @@ export const createAnnouncement = asyncHandler(async (req: Request, res: Respons
     include: { author: true },
   });
 
-  sendResponse(res, 201, publicAnnouncement(item), "Itangazo ryongewe (umushinga).");
+  await writeAudit(req.user!.id, "announcement.create", null, { title: item.title });
+  sendResponse(res, 201, publicAnnouncement(item), "Itangazo ryongewe (by'agategenyo).");
 });
 
 export const updateAnnouncement = asyncHandler(async (req: Request, res: Response) => {
@@ -107,6 +115,11 @@ export const updateAnnouncement = asyncHandler(async (req: Request, res: Respons
   }
 
   const { title, body, status } = req.body ?? {};
+  const bodyErr = longTextError(body, "Ubutumwa");
+  if (bodyErr) {
+    sendError(res, 422, bodyErr);
+    return;
+  }
   const coverUpload = (req.files as Record<string, Express.Multer.File[]> | undefined)?.coverImage?.[0];
   try {
     if (coverUpload) verifySignatureOrThrow("images", coverUpload.path);
@@ -139,5 +152,6 @@ export const deleteAnnouncement = asyncHandler(async (req: Request, res: Respons
   }
   await prisma.announcement.delete({ where: { id: item.id } });
   deleteUploadedFile(item.coverImage);
+  await writeAudit(req.user!.id, "announcement.delete", null, { title: item.title });
   sendResponse(res, 200, null, "Itangazo ryasibwe.");
 });
