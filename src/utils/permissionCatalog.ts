@@ -53,6 +53,16 @@ export const PERMISSION_CATALOG: PermissionDef[] = [
   { key: "classroom.host", category: "inyigisho ziri Live", label: "Gutangira no kuyobora isomo" },
   { key: "classroom.moderate", category: "inyigisho ziri Live", label: "Gucunga abari mu ishuri" },
   { key: "classroom.delete", category: "inyigisho ziri Live", label: "Gusiba isomo riteganyijwe" },
+  {
+    key: "classroom.chat_male",
+    category: "inyigisho ziri Live",
+    label: "Kureba ikiganiro cy'abahungu (male chat)",
+  },
+  {
+    key: "classroom.chat_female",
+    category: "inyigisho ziri Live",
+    label: "Kureba ikiganiro cy'abakobwa (female chat)",
+  },
 
   { key: "analytics.view", category: "Isesengura", label: "Kureba isesengura rusange" },
   { key: "analytics.users", category: "Isesengura", label: "Isesengura ry'abakoresha" },
