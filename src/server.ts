@@ -3,9 +3,9 @@ import { createServer } from "http";
 import { createApp } from "./app.js";
 import { initSocket } from "./realtime/socket.js";
 import { initGuestChatSocket } from "./realtime/guestChatSocket.js";
-import { initMediasoupWorkers } from "./realtime/mediasoup/workers.js";
 import { prisma } from "./utils/prisma.js";
 import { startGenderRoomCleanupSchedule } from "./utils/genderRoomCleanup.js";
+import { startClassReminderSchedule } from "./utils/classReminder.js";
 
 const PORT = Number(process.env.PORT) || 4000;
 const HOST = "0.0.0.0";
@@ -17,16 +17,13 @@ const httpServer = createServer(app);
 initGuestChatSocket(initSocket(httpServer));
 
 async function start() {
-  // Mediasoup workers must exist before any "classroom:join"/"media:*"
-  // socket event can be handled do this before accepting traffic.
-  await initMediasoupWorkers();
-
   const server = httpServer.listen(PORT, HOST, () => {
     console.log(`Kwegereza API listening on port ${PORT}`);
-    console.log("Socket.IO realtime (chat, presence, typing, live-class media) live on the same port");
+    console.log("Socket.IO realtime (chat, presence, typing) live on the same port");
   });
 
   startGenderRoomCleanupSchedule();
+  startClassReminderSchedule();
 
   async function shutdown(): Promise<void> {
     await prisma.$disconnect();

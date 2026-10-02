@@ -16,10 +16,13 @@ import {
   submitAttempt,
   updateExam,
   updateQuestion,
+  uploadProctorVideo,
 } from "../controllers/examController.js";
 import { authenticate, requireAnyPermission, requirePermission } from "../middleware/auth.js";
+import { makeMultiFieldUploader } from "../utils/storage.js";
 
 const router = Router();
+const uploadVideo = makeMultiFieldUploader({ video: "videos" });
 
 router.use(authenticate);
 
@@ -29,6 +32,7 @@ router.get("/published", listPublished);
 router.get("/:id/take", getExamForTaking);
 router.post("/:id/attempts", startAttempt);
 router.post("/attempts/:attemptId/submit", submitAttempt);
+router.post("/attempts/:attemptId/proctor-video", uploadVideo, uploadProctorVideo);
 router.get("/attempts/:attemptId/result", getAttemptResult);
 
 // Admin/leader: CRUD + question builder + results

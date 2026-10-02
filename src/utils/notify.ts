@@ -114,10 +114,11 @@ export async function notifyUser(input: NotifyInput): Promise<{ created: boolean
 export async function notifyAllActiveUsersExcept(
   excludeUserId: string,
   build: (userId: string) => NotifyInput
-) {
+): Promise<{ createdCount: number }> {
   const users = await prisma.user.findMany({
     where: { status: "ACTIVE", id: { not: excludeUserId } },
     select: { id: true },
   });
-  await Promise.all(users.map((u) => notifyUser(build(u.id))));
+  const results = await Promise.all(users.map((u) => notifyUser(build(u.id))));
+  return { createdCount: results.filter((r) => r.created).length };
 }

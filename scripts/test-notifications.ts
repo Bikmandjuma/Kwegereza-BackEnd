@@ -20,7 +20,7 @@
 import { io as ioClient, type Socket } from "socket.io-client";
 import { PrismaClient } from "@prisma/client";
 
-const API = "https://api.kwegereza.org";
+const API = "http://localhost:4000";
 const prisma = new PrismaClient();
 
 async function login(email: string, password: string) {

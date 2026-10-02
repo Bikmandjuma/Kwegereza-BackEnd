@@ -9,7 +9,7 @@
  */
 import { io as ioClient, type Socket } from "socket.io-client";
 
-const API = "https://api.kwegereza.org";
+const API = "http://localhost:4000";
 
 async function login(email: string, password: string) {
   const res = await fetch(`${API}/api/auth/login`, {

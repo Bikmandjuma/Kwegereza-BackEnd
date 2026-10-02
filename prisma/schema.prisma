@@ -513,6 +513,12 @@ model ExamAttempt {
   passed        Boolean?
   startedAt     DateTime  @default(now())
   submittedAt   DateTime?
+  // The composited screen+camera-corner recording from this attempt
+  // (see ExamTakePage.jsx) -- null until upload completes, which happens
+  // as a best-effort step AFTER the attempt is already scored and
+  // submitted, so a slow/failed upload never costs the student their
+  // actual exam result.
+  proctorVideoUrl String?
 
   answers ExamAnswer[]
 

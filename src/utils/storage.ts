@@ -3,6 +3,7 @@ import path from "path";
 import crypto from "crypto";
 import multer from "multer";
 import type { Request } from "express";
+import { fileURLToPath } from "url";
 
 // ===================== Storage abstraction =====================
 // Dev/production-cheap default: local disk under /uploads, served statically
@@ -13,18 +14,42 @@ import type { Request } from "express";
 // it's a good fit if/when this needs to move off local disk no code
 // outside this file needs to know which backend is used).
 
-export const UPLOADS_DIR = path.join(process.cwd(), "uploads");
+// Anchored to THIS FILE's own location on disk (dist/utils/storage.js,
+// two levels below the project root), NOT process.cwd(). process.cwd()
+// is whatever directory the Node process happened to be LAUNCHED from --
+// that's the project root if you always run `npm run dev` from there
+// locally, but cPanel's Node.js app manager (Passenger, or its own
+// wrapper under nodevenv/.../bin/node) can launch the same app from a
+// completely different working directory. When that happens, multer
+// writes uploads to one "uploads/" folder (wherever THAT cwd pointed)
+// while express.static in app.ts -- using this exact same constant --
+// looks for them in the identical place, so reads and writes always
+// agreed with each other locally, masking the bug entirely until a
+// REAL deployed file (shipped inside the project folder structure
+// itself, e.g. via a zip upload) needed to be found at a path cwd
+// never actually pointed to on that host. import.meta.url always
+// reflects where this file genuinely sits, regardless of launch
+// directory, so this can never drift the same way.
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+export const UPLOADS_DIR = path.join(__dirname, "..", "..", "uploads");
 
-for (const sub of ["images", "audio", "documents"]) {
+for (const sub of ["images", "audio", "documents", "videos"]) {
   fs.mkdirSync(path.join(UPLOADS_DIR, sub), { recursive: true });
 }
 
-type Category = "images" | "audio" | "documents";
+type Category = "images" | "audio" | "documents" | "videos";
 
 const ALLOWED: Record<Category, { mime: RegExp; ext: string[]; maxBytes: number }> = {
   images: { mime: /^image\/(jpeg|png|webp)$/, ext: [".jpg", ".jpeg", ".png", ".webp"], maxBytes: 5 * 1024 * 1024 },
   audio: { mime: /^audio\/(mpeg|mp3|wav|x-wav|mp4|aac|m4a)$/, ext: [".mp3", ".wav", ".m4a", ".aac"], maxBytes: 60 * 1024 * 1024 },
   documents: { mime: /^application\/pdf$/, ext: [".pdf"], maxBytes: 40 * 1024 * 1024 },
+  // Exam proctoring recordings (screen + camera-corner, composited
+  // client-side into one video/webm via canvas.captureStream -- see
+  // ExamTakePage.jsx). 500MB is a generous ceiling for a modest-bitrate
+  // recording of a multi-hour exam; if real usage runs longer or disk
+  // fills up faster than expected, this is the one number to revisit.
+  videos: { mime: /^video\/webm$/, ext: [".webm"], maxBytes: 500 * 1024 * 1024 },
 };
 
 // Real magic-byte sniffing a renamed .exe with a .pdf extension and a
@@ -41,6 +66,9 @@ const SIGNATURES: Record<Category, (buf: Buffer) => boolean> = {
     buf.slice(0, 4).toString("ascii") === "RIFF" || // wav
     buf.slice(4, 8).toString("ascii") === "ftyp", // m4a/mp4 container
   documents: (buf) => buf.slice(0, 5).toString("ascii") === "%PDF-",
+  // WebM/Matroska's own EBML container signature -- the same check any
+  // real media tool (ffprobe, etc.) uses to recognize the format.
+  videos: (buf) => buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3,
 };
 
 function makeStorage(category: Category) {
@@ -128,7 +156,13 @@ export function publicUrlFor(category: Category, filename: string) {
 
 export function deleteUploadedFile(publicUrl: string | null | undefined) {
   if (!publicUrl || !publicUrl.startsWith("/uploads/")) return;
-  const full = path.join(process.cwd(), publicUrl);
+  // Reuses UPLOADS_DIR (anchored to this file's real location) rather
+  // than re-deriving from process.cwd() a second time here -- the same
+  // bug existed in this function independently of the one above, and
+  // fixing only one of the two would have left deletes silently
+  // targeting the wrong path even after uploads/reads were correct.
+  const relative = publicUrl.slice("/uploads/".length);
+  const full = path.join(UPLOADS_DIR, relative);
   fs.unlink(full, () => {
     /* best-effort a missing file here is not worth failing the request over */
   });

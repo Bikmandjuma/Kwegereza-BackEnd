@@ -160,7 +160,7 @@ export const getMyDashboard = asyncHandler(async (req: Request, res: Response) =
   const rangeStart = getRangeStart(range);
   const now = new Date();
 
-  const [byCategory, sessions, videoEvents, audioEvents, examAttempts] = await Promise.all([
+  const [byCategory, sessions, videoEvents, audioEvents, examAttempts, liveClassAttendances] = await Promise.all([
     prisma.activityTime.groupBy({
       by: ["category"],
       where: { userId, ...(rangeStart ? { date: { gte: rangeStart } } : {}) },
@@ -183,6 +183,14 @@ export const getMyDashboard = asyncHandler(async (req: Request, res: Response) =
       include: { exam: true },
       orderBy: { submittedAt: "desc" },
     }),
+    // A still-in-progress attendance (leftAt still null, student hasn't
+    // left yet) counts up to "now" rather than contributing 0 -- the
+    // same logic sessionSeconds() below already uses for an ongoing
+    // platform session.
+    prisma.liveClassAttendance.findMany({
+      where: { userId, ...(rangeStart ? { joinedAt: { gte: rangeStart } } : {}) },
+      select: { joinedAt: true, leftAt: true },
+    }),
   ]);
 
   const totalPlatformSeconds = sessions.reduce((sum, s) => {
@@ -191,6 +199,10 @@ export const getMyDashboard = asyncHandler(async (req: Request, res: Response) =
   }, 0);
   const videoSeconds = videoEvents.reduce((sum, e) => sum + (e.watchSeconds ?? 0), 0);
   const audioSeconds = audioEvents.reduce((sum, e) => sum + (e.watchSeconds ?? 0), 0);
+  const liveClassSeconds = liveClassAttendances.reduce((sum, a) => {
+    const end = a.leftAt ?? now;
+    return sum + Math.max(0, Math.floor((end.getTime() - a.joinedAt.getTime()) / 1000));
+  }, 0);
 
   const scores = examAttempts.filter((a) => a.scorePercent != null).map((a) => a.scorePercent as number);
   const avgScorePercent = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : null;
@@ -204,6 +216,7 @@ export const getMyDashboard = asyncHandler(async (req: Request, res: Response) =
       appSeconds: totalPlatformSeconds,
       videoSeconds,
       audioSeconds,
+      liveClassSeconds,
       examsCount: examAttempts.length,
       avgScorePercent,
       passedCount,

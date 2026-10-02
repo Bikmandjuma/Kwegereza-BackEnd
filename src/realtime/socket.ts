@@ -2,7 +2,6 @@ import type { Server as HttpServer } from "http";
 import { Server, type Socket } from "socket.io";
 import { verifyToken } from "../utils/jwt.js";
 import { prisma } from "../utils/prisma.js";
-import { registerLiveClassHandlers } from "./liveClass.js";
 import { setIo } from "./ioInstance.js";
 import { notifyUser } from "../utils/notify.js";
 import { isCrossGenderBlocked } from "../utils/genderScope.js";
@@ -29,7 +28,7 @@ function publicMessage(m: any) {
 export function initSocket(httpServer: HttpServer) {
   const io = new Server(httpServer, {
     cors: {
-      origin: process.env.CORS_ORIGIN ?? "https://kwegereza.org",
+      origin: process.env.CORS_ORIGIN ?? "http://localhost:5173",
       credentials: true,
     },
   });
@@ -86,7 +85,10 @@ export function initSocket(httpServer: HttpServer) {
       socket.broadcast.except(`user:${userId}`).emit("presence:update", { userId, fullName, online: true });
     }
 
-    registerLiveClassHandlers(io, socket);
+    // Live-class socket handlers moved to their own service (see
+    // Kwegereza-LiveClass/) alongside its mediasoup worker/room
+    // management -- the frontend connects to that service's own socket
+    // server for live-class media, separately from this connection.
 
     // ---- guest chat: staff-side room join ----
     // Guest conversations themselves live on a separate, unauthenticated
@@ -216,7 +218,13 @@ export function initSocket(httpServer: HttpServer) {
           if (viewingUserIds.has(p.userId)) continue;
           notifyUser({
             userId: p.userId,
-            type: "message",
+            // Was just "message" before, which never matched the "chat."
+            // category prefix in notify.ts -- meaning this silently
+            // bypassed the user's own CHAT notification preference and
+            // always fired regardless of what they'd chosen. Fixed to
+            // actually respect their setting, same as every other
+            // category.
+            type: "chat.message",
             title: `Ubutumwa bushya bwa ${socket.data.fullName}`,
             body: body.trim().slice(0, 120),
             url: "/chat",

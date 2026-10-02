@@ -12,7 +12,7 @@ cp .env.example .env
 npx prisma migrate dev --name init
 npx prisma generate
 npx tsx prisma/seed.ts     # creates the demo Admin + Leader accounts below
-npm run dev                # https://api.kwegereza.org
+npm run dev                # http://localhost:4000
 ```
 
 Demo accounts created by the seed script:

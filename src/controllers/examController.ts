@@ -3,6 +3,7 @@ import { asyncHandler } from "../middleware/asyncHandler.js";
 import { sendError, sendResponse } from "../utils/apiResponse.js";
 import { prisma } from "../utils/prisma.js";
 import { longTextError } from "../utils/validateText.js";
+import { deleteUploadedFile, publicUrlFor, verifySignatureOrThrow } from "../utils/storage.js";
 
 const QUESTION_TYPES = new Set(["MULTIPLE_CHOICE", "FILL_BLANK"]);
 
@@ -350,6 +351,7 @@ export const listAttempts = asyncHandler(async (req: Request, res: Response) => 
       passed: a.passed,
       startedAt: a.startedAt,
       submittedAt: a.submittedAt,
+      proctorVideoUrl: a.proctorVideoUrl,
     }))
   );
 });
@@ -535,4 +537,42 @@ export const getAttemptResult = asyncHandler(async (req: Request, res: Response)
       correctOptions: a.question.options.filter((o) => o.isCorrect).map((o) => o.text),
     })),
   });
+});
+
+/**
+ * Best-effort, uploaded AFTER the attempt is already scored and
+ * submitted (see ExamTakePage.jsx's handleSubmit) -- a slow network or a
+ * dropped upload here never costs the student their actual result,
+ * which was already recorded by submitAttempt above. Only the attempt's
+ * own owner can upload to it, and only once: a second upload attempt
+ * (which shouldn't normally happen from the real UI) replaces rather
+ * than appends, deleting whatever was there first so disk usage never
+ * silently doubles per retry.
+ */
+export const uploadProctorVideo = asyncHandler(async (req: Request, res: Response) => {
+  const attempt = await prisma.examAttempt.findUnique({ where: { id: req.params.attemptId } });
+  if (!attempt || attempt.userId !== req.user!.id) {
+    sendError(res, 404, "Iki gerageza ntikiboneka.");
+    return;
+  }
+
+  const file = (req.files as Record<string, Express.Multer.File[]> | undefined)?.video?.[0];
+  if (!file) {
+    sendError(res, 422, "Nta videwo yoherejwe.");
+    return;
+  }
+
+  try {
+    verifySignatureOrThrow("videos", file.path);
+  } catch (err: any) {
+    sendError(res, 422, err.message);
+    return;
+  }
+
+  if (attempt.proctorVideoUrl) deleteUploadedFile(attempt.proctorVideoUrl);
+
+  const proctorVideoUrl = publicUrlFor("videos", file.filename);
+  await prisma.examAttempt.update({ where: { id: attempt.id }, data: { proctorVideoUrl } });
+
+  sendResponse(res, 200, { proctorVideoUrl }, "Videwo yoherejwe.");
 });

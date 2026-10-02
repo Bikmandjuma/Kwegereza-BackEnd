@@ -40,7 +40,19 @@ export async function sendPushToUser(
             endpoint: sub.endpoint,
             keys: { p256dh: sub.p256dh, auth: sub.auth },
           },
-          JSON.stringify(payload)
+          JSON.stringify(payload),
+          // urgency: "high" is what actually makes this reliably appear
+          // while the phone is on another app: without it, the push
+          // service (FCM, under Android Chrome) is explicitly allowed to
+          // DEFER a "normal"-urgency message while the device is in
+          // battery-saver or Doze mode with the screen off -- exactly
+          // the state a student's phone is in while they're using
+          // WhatsApp. TTL caps how long a deferred/offline device's
+          // push service will hold this before giving up: a day is
+          // generous for "live class starting"-style timeliness without
+          // being so long that a long-offline device suddenly gets a
+          // week-old, no-longer-relevant notification.
+          { urgency: "high", TTL: 24 * 60 * 60 }
         );
         sent++;
       } catch (err: any) {

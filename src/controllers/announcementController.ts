@@ -5,6 +5,7 @@ import { prisma } from "../utils/prisma.js";
 import { deleteUploadedFile, publicUrlFor, verifySignatureOrThrow } from "../utils/storage.js";
 import { writeAudit } from "../utils/auditLog.js";
 import { longTextError } from "../utils/validateText.js";
+import { notifyAllActiveUsersExcept } from "../utils/notify.js";
 
 function publicAnnouncement(a: any) {
   return {
@@ -141,6 +142,24 @@ export const updateAnnouncement = asyncHandler(async (req: Request, res: Respons
   }
 
   const updated = await prisma.announcement.update({ where: { id: item.id }, data, include: { author: true } });
+
+  // Fire ONLY on the actual DRAFT -> PUBLISHED transition, not on every
+  // save of an already-published announcement (which would otherwise
+  // re-notify everyone just because an admin fixed a typo in the body).
+  if (item.status !== "PUBLISHED" && updated.status === "PUBLISHED") {
+    await notifyAllActiveUsersExcept(req.user!.id, (userId) => ({
+      userId,
+      type: "announcement.published",
+      title: "Itangazo rishya",
+      body: updated.title,
+      // There's no per-announcement deep-link page yet, only the flat
+      // list -- pointing at a /amatangazo/:id route that doesn't exist
+      // would just 404 when someone taps the notification.
+      url: `/amatangazo`,
+      eventKey: `announcement-published-${updated.id}`,
+    }));
+  }
+
   sendResponse(res, 200, publicAnnouncement(updated), "Bikawe.");
 });
 

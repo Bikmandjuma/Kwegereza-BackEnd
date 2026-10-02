@@ -118,3 +118,31 @@ export function requireAnyPermission(...permissions: string[]) {
     next();
   };
 }
+
+/**
+ * Gates the /api/internal/* routes (see internalRoutes.ts) -- these exist
+ * ONLY for the separately-hosted LiveClass service to call server-to-server
+ * (e.g. re-validating a user's live status without that service needing
+ * its own database connection), never for the public frontend. There is
+ * no end-user JWT involved in these calls at all, so a shared secret
+ * known only to the two backend services is the right mechanism here,
+ * not the normal authenticate middleware.
+ *
+ * INTERNAL_API_SECRET must be set for these routes to work at all --
+ * refusing every request rather than falling back to some default is
+ * deliberate: a missing secret should be a loud, immediate deployment
+ * error, not a route that's silently wide open to anyone who finds it.
+ */
+export function requireInternalSecret(req: Request, res: Response, next: NextFunction): void {
+  const expected = process.env.INTERNAL_API_SECRET;
+  if (!expected) {
+    sendError(res, 503, "Internal API ntiyashyizweho (INTERNAL_API_SECRET ntabwo yagenywe).");
+    return;
+  }
+  const provided = req.headers["x-internal-secret"];
+  if (provided !== expected) {
+    sendError(res, 401, "Internal API: ibanga ritaribyo.");
+    return;
+  }
+  next();
+}

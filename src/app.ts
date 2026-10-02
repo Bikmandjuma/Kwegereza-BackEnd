@@ -4,6 +4,7 @@ import express from "express";
 import helmet from "helmet";
 import morgan from "morgan";
 import multer from "multer";
+import path from "path";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler.js";
 import authRoutes from "./routes/authRoutes.js";
 import activityRoutes from "./routes/activityRoutes.js";
@@ -18,7 +19,7 @@ import examRoutes from "./routes/examRoutes.js";
 import ifaidaRoutes from "./routes/ifaidaRoutes.js";
 import photoInsightRoutes from "./routes/photoInsightRoutes.js";
 import guestChatRoutes from "./routes/guestChatRoutes.js";
-import liveClassRoutes from "./routes/liveClassRoutes.js";
+import internalRoutes from "./routes/internalRoutes.js";
 import notificationRoutes from "./routes/notificationRoutes.js";
 import publicStatsRoutes from "./routes/publicStatsRoutes.js";
 import pushRoutes from "./routes/pushRoutes.js";
@@ -50,7 +51,7 @@ export function createApp() {
   );
   app.use(
     cors({
-      origin: process.env.CORS_ORIGIN ?? "https://kwegereza.org", //add frontend url
+      origin: process.env.CORS_ORIGIN ?? "http://localhost:5173", //add frontend url
       credentials: true,
       // Needed specifically for pdf.js's cross-origin Range-request
       // negotiation (see mozilla/pdf.js#4530 and mozilla/pdf.js#10159):
@@ -80,6 +81,22 @@ export function createApp() {
   // for what changes when this moves to S3-compatible object storage in production.
   app.use("/uploads", express.static(UPLOADS_DIR));
 
+  // Reached ONLY when express.static just above did NOT find the
+  // requested file (it calls next() rather than erroring) -- logs the
+  // exact absolute path on disk that was checked, so a 404 here is a
+  // five-second log lookup instead of a guessing game. This matters
+  // specifically because UPLOADS_DIR's resolution has bitten this app
+  // before (see the import.meta.url fix in storage.ts): a file written
+  // under an OLDER, differently-resolved path before that fix won't
+  // retroactively move itself just because the code is now correct, and
+  // this is the fastest way to confirm that's what's happening versus
+  // a genuinely new problem.
+  app.use("/uploads", (req, res) => {
+    const attemptedPath = path.join(UPLOADS_DIR, req.path);
+    console.error(`[uploads 404] requested ${req.originalUrl} -> looked for file at: ${attemptedPath}`);
+    sendError(res, 404, "Iyi dosiye ntiboneka kuri seriveri.");
+  });
+
   app.use("/api/auth", authRoutes);
   app.use("/api/activity", activityRoutes);
   app.use("/api/analytics", analyticsRoutes);
@@ -90,7 +107,15 @@ export function createApp() {
   app.use("/api/ifaida", ifaidaRoutes);
   app.use("/api/photo-insights", photoInsightRoutes);
   app.use("/api/guest-chat", guestChatRoutes);
-  app.use("/api/live-classes", liveClassRoutes);
+  // Server-to-server only (see requireInternalSecret) -- lets the
+  // separately-hosted LiveClass service operate without its own direct
+  // database connection, reaching the shared data purely over HTTPS
+  // instead of a raw MySQL connection open across the network.
+  app.use("/api/internal", internalRoutes);
+  // /api/live-classes has moved to its own service (see
+  // Kwegereza-LiveClass/) -- mediasoup needs a compiled native worker
+  // this API's hosting can't build, and importing it here at all used
+  // to crash the ENTIRE API at boot, not just live class.
   app.use("/api/push", pushRoutes);
   app.use("/api/notifications", notificationRoutes);
   app.use("/api/books", bookRoutes);

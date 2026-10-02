@@ -40,3 +40,14 @@ export const unsubscribe = asyncHandler(async (req: Request, res: Response) => {
   await prisma.pushSubscription.deleteMany({ where: { endpoint, userId: req.user!.id } });
   sendResponse(res, 200, null, "Push notifications zahagaritswe kuri iyi terefone/mudasobwa.");
 });
+
+/** Lets the frontend know whether THIS account has any push
+ * subscription registered at all, across however many devices --
+ * useful for a settings page that wants to show "notifications are on"
+ * without the browser's own Notification.permission being the only
+ * signal (that's per-browser, not per-account, so it can't by itself
+ * answer "is push enabled for me anywhere"). */
+export const getSubscriptionStatus = asyncHandler(async (req: Request, res: Response) => {
+  const count = await prisma.pushSubscription.count({ where: { userId: req.user!.id } });
+  sendResponse(res, 200, { subscribed: count > 0, deviceCount: count });
+});
