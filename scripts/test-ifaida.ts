@@ -8,7 +8,7 @@
  *
  * Run with: npx tsx scripts/test-ifaida.ts   (server must be running)
  */
-const API = "http://localhost:4000";
+const API = "https://api.kwegereza.org";
 
 async function login(email: string, password: string) {
   const res = await fetch(`${API}/api/auth/login`, {

@@ -5,9 +5,56 @@ import { sendError, sendResponse } from "../utils/apiResponse.js";
 import { prisma } from "../utils/prisma.js";
 import { getIo } from "../realtime/ioInstance.js";
 import { isOutOfGenderScope } from "../utils/genderScope.js";
-import { isAdminTier } from "../utils/permissions.js";
+import { hasPermission, isAdminTier } from "../utils/permissions.js";
+import { isUserOnline } from "../realtime/socket.js";
+import { notifyUser } from "../utils/notify.js";
 
 const VALID_GENDERS = new Set(["MALE", "FEMALE"]);
+
+/**
+ * A guest's message already reaches every connected staff socket
+ * instantly (see notifyStaff below) -- this is for the OTHER case: a
+ * male/female leader who's eligible to answer this specific
+ * conversation (same gender scope that already gates staffSendMessage)
+ * but isn't online at all right now, so that realtime push can't reach
+ * them. Without this, a guest's message could sit unanswered with no
+ * signal to anyone until a leader happens to open the app.
+ *
+ * Deliberately uncategorized (no "chat."/etc. prefix -- see
+ * categoryForType in notify.ts): a support-coverage gap like this isn't
+ * something a leader should be able to silence via notification
+ * preferences, the same reasoning that keeps account/security
+ * notifications always-on.
+ */
+async function alertOfflineEligibleStaff(conversation: { id: string; guestGender: string | null }, messageId: string) {
+  const candidates = await prisma.user.findMany({
+    where: { status: "ACTIVE", role: { not: "STUDENT" } },
+    select: { id: true, role: true, permissions: true, gender: true },
+  });
+
+  const eligible = candidates.filter(
+    (u) =>
+      (isAdminTier(u.role) || hasPermission(u.role, u.permissions, "guestchat.respond")) &&
+      !isOutOfGenderScope(u, { gender: conversation.guestGender })
+  );
+  if (eligible.length === 0) return;
+
+  const anyoneOnline = eligible.some((u) => isUserOnline(u.id));
+  if (anyoneOnline) return;
+
+  await Promise.all(
+    eligible.map((u) =>
+      notifyUser({
+        userId: u.id,
+        type: "guestchat.unanswered",
+        title: "Umusuye arategereza igisubizo",
+        body: "Hari umusuye wohereje ubutumwa ariko nta muyobozi uri kuri interineti ubu.",
+        url: "/leader/abasuye-chat",
+        eventKey: `guestchat-unanswered-${messageId}-${u.id}`,
+      })
+    )
+  );
+}
 
 function publicMessage(m: any) {
   return {
@@ -115,6 +162,11 @@ export const guestSendMessage = asyncHandler(async (req: Request, res: Response)
 
   const publicMsg = publicMessage(message);
   notifyStaff("guestchat:new-message", { conversationId: conversation.id, message: publicMsg });
+  // Best-effort: a slow/failed alert must never hold up the guest's own
+  // message from being saved and shown back to them.
+  alertOfflineEligibleStaff(conversation, message.id).catch((err) =>
+    console.error("[guestChatController] alertOfflineEligibleStaff failed:", err)
+  );
   sendResponse(res, 201, publicMsg);
 });
 

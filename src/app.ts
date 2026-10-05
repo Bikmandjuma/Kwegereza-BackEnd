@@ -51,7 +51,7 @@ export function createApp() {
   );
   app.use(
     cors({
-      origin: process.env.CORS_ORIGIN ?? "http://localhost:5173", //add frontend url
+      origin: process.env.CORS_ORIGIN ?? "https://kwegereza.org", //add frontend url
       credentials: true,
       // Needed specifically for pdf.js's cross-origin Range-request
       // negotiation (see mozilla/pdf.js#4530 and mozilla/pdf.js#10159):

@@ -28,7 +28,7 @@ function publicMessage(m: any) {
 export function initSocket(httpServer: HttpServer) {
   const io = new Server(httpServer, {
     cors: {
-      origin: process.env.CORS_ORIGIN ?? "http://localhost:5173",
+      origin: process.env.CORS_ORIGIN ?? "https://kwegereza.org",
       credentials: true,
     },
   });

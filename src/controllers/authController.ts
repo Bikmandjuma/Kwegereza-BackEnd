@@ -296,13 +296,28 @@ export const googleAuth = asyncHandler(async (req: Request, res: Response) => {
  * everyone can edit their own basic info and photo.
  */
 export const updateMyProfile = asyncHandler(async (req: Request, res: Response) => {
-  const { fullName, phone } = req.body ?? {};
+  const { fullName, phone, gender } = req.body ?? {};
   const files = req.files as Record<string, Express.Multer.File[]> | undefined;
   const avatarUpload = files?.avatar?.[0];
 
   const data: any = {};
   if (fullName !== undefined && String(fullName).trim()) data.fullName = String(fullName).trim();
   if (phone !== undefined) data.phone = phone ? String(phone).trim() : null;
+
+  // One-time self-service set, never a change: gender gates the
+  // gender-scoped chat room (and the equivalent live-class channel), so
+  // letting it flip freely would let someone hop into the other room at
+  // will. Older accounts created before gender was asked at
+  // registration can set it exactly once, the same way they would have
+  // at signup; anyone needing a correction after that goes through an
+  // admin, not this self-service path.
+  if (gender !== undefined && !req.user!.gender) {
+    if (!VALID_GENDERS.has(String(gender))) {
+      sendError(res, 422, "Hitamo igitsina nyacyo.");
+      return;
+    }
+    data.gender = String(gender);
+  }
 
   if (avatarUpload) {
     try {
