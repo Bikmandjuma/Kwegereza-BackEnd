@@ -1,5 +1,6 @@
 import { prisma } from "./prisma.js";
 import { sendPushToUser } from "./webPush.js";
+import { sendExpoPushToUser } from "./expoPush.js";
 import { getIo } from "../realtime/ioInstance.js";
 
 // The configurable categories a user can silence from Notification Center
@@ -101,6 +102,16 @@ export async function notifyUser(input: NotifyInput): Promise<{ created: boolean
         body: input.body,
         url: input.url,
       }).catch((err) => console.error("[notify] push dispatch failed:", err));
+      // Mobile app's own channel, same fire-and-forget reasoning --
+      // most users will only ever have a row in ONE of these two
+      // tables (web push subscription or Expo token), but a user who's
+      // used both the website and the app has both, and gets notified
+      // on whichever device they actually have open.
+      sendExpoPushToUser(input.userId, {
+        title: input.title,
+        body: input.body,
+        url: input.url,
+      }).catch((err) => console.error("[notify] expo push dispatch failed:", err));
     }
   }
 

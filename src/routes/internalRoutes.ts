@@ -3,6 +3,7 @@ import {
   closeAttendanceInternal,
   createAttendanceInternal,
   createLiveClassInternal,
+  createRecordingInternal,
   deleteLiveClassInternal,
   getActiveUserEmailsExcept,
   getLiveClassInternal,
@@ -11,6 +12,7 @@ import {
   notifyAllActiveExcept,
   trackActivity,
   updateLiveClassInternal,
+  updateRecordingInternal,
 } from "../controllers/internalController.js";
 import { requireInternalSecret } from "../middleware/auth.js";
 
@@ -33,5 +35,8 @@ router.delete("/live-classes/:id", deleteLiveClassInternal);
 
 router.post("/live-class-attendance", createAttendanceInternal);
 router.patch("/live-class-attendance/close", closeAttendanceInternal);
+
+router.post("/live-class-recordings", createRecordingInternal);
+router.patch("/live-class-recordings/:egressId", updateRecordingInternal);
 
 export default router;

@@ -12,6 +12,13 @@ import { hasPermission } from "../utils/permissions.js";
 // survives across multiple server instances the interface stays identical.
 const onlineUsers = new Map<string, Set<string>>();
 
+// EDIT_WINDOW_MS mirrors the frontend's own 10-minute edit cutoff, but is
+// the one that actually matters: this is checked server-side on every
+// edit attempt, not trusted from whatever the client's clock or UI state
+// claims. Same constant used in chatController.ts's REST edit endpoint
+// so the two paths can never silently disagree about the cutoff.
+export const EDIT_WINDOW_MS = 10 * 60 * 1000;
+
 function publicMessage(m: any) {
   return {
     id: m.id,
@@ -20,15 +27,33 @@ function publicMessage(m: any) {
     senderName: m.sender?.fullName,
     body: m.deletedAt ? null : m.body,
     deleted: !!m.deletedAt,
+    edited: !!m.editedAt,
+    isForwarded: !!m.isForwarded,
     clientMessageId: m.clientMessageId,
     createdAt: m.createdAt,
+    attachmentUrl: m.attachmentUrl ?? null,
+    attachmentType: m.attachmentType ?? null,
+    attachmentName: m.attachmentName ?? null,
+    attachmentSize: m.attachmentSize ?? null,
+    isVoiceNote: Boolean(m.isVoiceNote),
+    groupId: m.groupId ?? null,
+    replyTo: m.replyTo
+      ? {
+          id: m.replyTo.id,
+          senderId: m.replyTo.senderId,
+          senderName: m.replyTo.sender?.fullName,
+          body: m.replyTo.deletedAt ? null : m.replyTo.body,
+          deleted: !!m.replyTo.deletedAt,
+          attachmentType: m.replyTo.deletedAt ? null : m.replyTo.attachmentType ?? null,
+        }
+      : null,
   };
 }
 
 export function initSocket(httpServer: HttpServer) {
   const io = new Server(httpServer, {
     cors: {
-      origin: process.env.CORS_ORIGIN ?? "https://kwegereza.org",
+      origin: process.env.CORS_ORIGIN ?? "http://localhost:5173",
       credentials: true,
     },
   });
@@ -135,10 +160,31 @@ export function initSocket(httpServer: HttpServer) {
     });
 
     // ---- message:send (the idempotent core) ----
-    socket.on("message:send", async ({ conversationId, clientMessageId, body }, ack) => {
-      if (!conversationId || !clientMessageId || !body?.trim()) {
+    socket.on(
+      "message:send",
+      async (
+        { conversationId, clientMessageId, body, replyToId, attachmentUrl, attachmentType, attachmentName, attachmentSize, groupId, isVoiceNote },
+        ack
+      ) => {
+      // A message needs EITHER real text OR an attachment -- never
+      // neither. An attachment-only message (a photo with no caption)
+      // sends body as "" from the client; that's valid here as long as
+      // attachmentUrl is present, unlike a bare empty text message.
+      if (!conversationId || !clientMessageId || (!body?.trim() && !attachmentUrl)) {
         ack?.({ ok: false, error: "Ubutumwa ntibwuzuye neza." });
         return;
+      }
+
+      // A reply target must be a real message in THIS SAME conversation --
+      // never trusted from the client beyond that. Silently dropped
+      // (rather than rejecting the whole send) if it doesn't check out,
+      // since by the time this fires the user has already typed a real
+      // message; losing the quote context is a much smaller problem than
+      // losing the message itself.
+      let validReplyToId: string | null = null;
+      if (replyToId) {
+        const original = await prisma.message.findUnique({ where: { id: replyToId }, select: { conversationId: true } });
+        if (original?.conversationId === conversationId) validReplyToId = replyToId;
       }
 
       const participant = await prisma.conversationParticipant.findUnique({
@@ -165,12 +211,25 @@ export function initSocket(httpServer: HttpServer) {
         return;
       }
 
+      const trimmedBody = (body ?? "").trim();
       let created = true;
       let message;
       try {
         message = await prisma.message.create({
-          data: { conversationId, senderId: userId, clientMessageId, body: body.trim() },
-          include: { sender: true },
+          data: {
+            conversationId,
+            senderId: userId,
+            clientMessageId,
+            body: trimmedBody,
+            replyToId: validReplyToId,
+            attachmentUrl: attachmentUrl || null,
+            attachmentType: attachmentType || null,
+            attachmentName: attachmentName || null,
+            attachmentSize: attachmentSize || null,
+            groupId: groupId || null,
+            isVoiceNote: Boolean(isVoiceNote),
+          },
+          include: { sender: true, replyTo: { include: { sender: true } } },
         });
       } catch (err: any) {
         // P2002 = unique constraint violation on (senderId, clientMessageId).
@@ -181,7 +240,7 @@ export function initSocket(httpServer: HttpServer) {
           created = false;
           message = await prisma.message.findUnique({
             where: { senderId_clientMessageId: { senderId: userId, clientMessageId } },
-            include: { sender: true },
+            include: { sender: true, replyTo: { include: { sender: true } } },
           });
         } else {
           ack?.({ ok: false, error: "Habaye ikibazo mu kohereza ubutumwa." });
@@ -226,12 +285,185 @@ export function initSocket(httpServer: HttpServer) {
             // category.
             type: "chat.message",
             title: `Ubutumwa bushya bwa ${socket.data.fullName}`,
-            body: body.trim().slice(0, 120),
+            body: trimmedBody ? trimmedBody.slice(0, 120) : attachmentType === "IMAGE" ? "📷 Ifoto" : "📎 Inyandiko",
             url: "/chat",
             eventKey: `message-${message!.id}-${p.userId}`, // one row per message per recipient
           }).catch((err) => console.error("[chat] notify failed:", err));
         }
       }
+      }
+    );
+
+    // ---- message:edit ----
+    // Only the sender, and only within EDIT_WINDOW_MS of the ORIGINAL
+    // send (createdAt, never editedAt -- re-editing an edit doesn't reset
+    // the clock). Re-checked here against the database's own timestamp;
+    // a stale client clock or a tampered request can't extend the window.
+    socket.on("message:edit", async ({ conversationId, messageId, body }, ack) => {
+      if (!conversationId || !messageId || !body?.trim()) {
+        ack?.({ ok: false, error: "Ubutumwa ntibwuzuye neza." });
+        return;
+      }
+      const existing = await prisma.message.findUnique({ where: { id: messageId } });
+      if (!existing || existing.conversationId !== conversationId || existing.senderId !== userId) {
+        ack?.({ ok: false, error: "Ntushobora guhindura ubu butumwa." });
+        return;
+      }
+      if (existing.deletedAt) {
+        ack?.({ ok: false, error: "Ubu butumwa bwasibwe." });
+        return;
+      }
+      if (Date.now() - existing.createdAt.getTime() > EDIT_WINDOW_MS) {
+        ack?.({ ok: false, error: "Igihe cyo guhindura ubu butumwa cyarangiye (iminota 10)." });
+        return;
+      }
+
+      const updated = await prisma.message.update({
+        where: { id: messageId },
+        data: { body: body.trim(), editedAt: new Date() },
+        include: { sender: true, replyTo: { include: { sender: true } } },
+      });
+      const payload = publicMessage(updated);
+      ack?.({ ok: true, message: payload });
+      io.to(`conv:${conversationId}`).emit("message:edited", payload);
+    });
+
+    // ---- message:delete ----
+    // mode "EVERYONE": sender-only, sets the existing global deletedAt --
+    // the exact same column message:send's publicMessage() already reads,
+    // so an everyone-delete is indistinguishable from any other soft
+    // delete to every reader of this conversation, present or future.
+    // mode "ME": any participant, hides it only from their own device via
+    // MessageDeletion -- no broadcast, since nobody else's view changes.
+    socket.on("message:delete", async ({ conversationId, messageId, mode }, ack) => {
+      if (!conversationId || !messageId || (mode !== "EVERYONE" && mode !== "ME")) {
+        ack?.({ ok: false, error: "Ibisabwa ntibyuzuye." });
+        return;
+      }
+      const existing = await prisma.message.findUnique({ where: { id: messageId } });
+      if (!existing || existing.conversationId !== conversationId) {
+        ack?.({ ok: false, error: "Ubu butumwa ntabwo buboneka." });
+        return;
+      }
+
+      if (mode === "EVERYONE") {
+        if (existing.senderId !== userId) {
+          ack?.({ ok: false, error: "Ushobora gusiba ubutumwa bwawe bwonyine kuri bose." });
+          return;
+        }
+        if (!existing.deletedAt) {
+          await prisma.message.update({ where: { id: messageId }, data: { deletedAt: new Date() } });
+        }
+        ack?.({ ok: true });
+        io.to(`conv:${conversationId}`).emit("message:deleted", { messageId, mode: "EVERYONE" });
+        return;
+      }
+
+      // mode === "ME"
+      const participant = await prisma.conversationParticipant.findUnique({
+        where: { conversationId_userId: { conversationId, userId } },
+      });
+      if (!participant) {
+        ack?.({ ok: false, error: "Ntabwo uri mu kiganiro." });
+        return;
+      }
+      await prisma.messageDeletion.upsert({
+        where: { messageId_userId: { messageId, userId } },
+        update: {},
+        create: { messageId, userId },
+      });
+      ack?.({ ok: true });
+      // Deliberately only acked to the caller's own socket, not broadcast --
+      // the whole point of "delete for me" is that no one else's copy of
+      // this conversation changes.
+    });
+
+    // ---- message:forward ----
+    // Creates a genuinely new Message row in the TARGET conversation --
+    // never moves or re-links the original. The original must not be
+    // deleted and the caller must belong to BOTH conversations (source,
+    // to prove they actually received this message, and target, to post
+    // into it) -- gender-scope on the target conversation is already
+    // enforced by conversation membership itself, since you can't be a
+    // participant of a gender room or DM outside your own scope.
+    socket.on(
+      "message:forward",
+      async ({ fromConversationId, toConversationId, messageId, clientMessageId }, ack) => {
+        if (!fromConversationId || !toConversationId || !messageId || !clientMessageId) {
+          ack?.({ ok: false, error: "Ibisabwa ntibyuzuye." });
+          return;
+        }
+        const [sourceParticipant, targetParticipant, original] = await Promise.all([
+          prisma.conversationParticipant.findUnique({
+            where: { conversationId_userId: { conversationId: fromConversationId, userId } },
+          }),
+          prisma.conversationParticipant.findUnique({
+            where: { conversationId_userId: { conversationId: toConversationId, userId } },
+          }),
+          prisma.message.findUnique({ where: { id: messageId } }),
+        ]);
+        if (!sourceParticipant || !targetParticipant) {
+          ack?.({ ok: false, error: "Ntabwo uri mu kiganiro." });
+          return;
+        }
+        if (!original || original.conversationId !== fromConversationId || original.deletedAt) {
+          ack?.({ ok: false, error: "Ubu butumwa ntibukiboneka." });
+          return;
+        }
+
+        let created = true;
+        let message;
+        try {
+          message = await prisma.message.create({
+            data: {
+              conversationId: toConversationId,
+              senderId: userId,
+              clientMessageId,
+              body: original.body,
+              isForwarded: true,
+              attachmentUrl: original.attachmentUrl,
+              attachmentType: original.attachmentType,
+              attachmentName: original.attachmentName,
+              attachmentSize: original.attachmentSize,
+              isVoiceNote: original.isVoiceNote,
+            },
+            include: { sender: true, replyTo: { include: { sender: true } } },
+          });
+        } catch (err: any) {
+          if (err.code === "P2002") {
+            created = false;
+            message = await prisma.message.findUnique({
+              where: { senderId_clientMessageId: { senderId: userId, clientMessageId } },
+              include: { sender: true, replyTo: { include: { sender: true } } },
+            });
+          } else {
+            ack?.({ ok: false, error: "Habaye ikibazo mu kohereza ubutumwa." });
+            return;
+          }
+        }
+        const payload = publicMessage(message);
+        ack?.({ ok: true, message: payload, duplicate: !created });
+        if (created) io.to(`conv:${toConversationId}`).emit("message:new", payload);
+      }
+    );
+
+    // ---- conversation:mark-read (real-time counterpart of the REST
+    // endpoint in chatController.ts) ----
+    // Broadcasting this is what lets every OTHER open client in the room
+    // flip that message's ticks to "read" immediately, instead of only
+    // finding out the next time they happen to refetch.
+    socket.on("conversation:mark-read", async ({ conversationId }, ack) => {
+      const participant = await prisma.conversationParticipant.findUnique({
+        where: { conversationId_userId: { conversationId, userId } },
+      });
+      if (!participant) {
+        ack?.({ ok: false, error: "Ntabwo uri mu kiganiro." });
+        return;
+      }
+      const lastReadAt = new Date();
+      await prisma.conversationParticipant.update({ where: { id: participant.id }, data: { lastReadAt } });
+      ack?.({ ok: true });
+      socket.to(`conv:${conversationId}`).emit("conversation:read-receipt", { conversationId, userId, lastReadAt });
     });
 
     // ---- typing indicators: ephemeral, never persisted ----

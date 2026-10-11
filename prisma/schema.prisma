@@ -59,13 +59,17 @@ model User {
   auditLogsAsActor  AuditLog[] @relation("ActorLogs")
   auditLogsAsTarget AuditLog[] @relation("TargetLogs")
 
-  conversations ConversationParticipant[]
-  messages      Message[]
+  conversations     ConversationParticipant[]
+  messages          Message[]
+  messageDeletions  MessageDeletion[]
+  chatSettings      ChatSettings?
 
   hostedClasses        LiveClass[]
   liveClassAttendances LiveClassAttendance[]
+  startedRecordings    LiveClassRecording[]
 
   pushSubscriptions PushSubscription[]
+  expoPushTokens    ExpoPushToken[]
   notifications     Notification[]
   notificationPreferences NotificationPreference[]
 
@@ -256,6 +260,22 @@ model PushSubscription {
   endpoint  String   @unique
   p256dh    String
   auth      String
+  createdAt DateTime @default(now())
+}
+
+// The mobile app's equivalent of PushSubscription above -- a browser
+// subscribes with a VAPID keypair and an endpoint/keys triple; the
+// Expo-built mobile app instead gets one opaque ExpoPushToken per
+// installed device from Expo's own push service, which is all sendExpoPushToUser
+// (src/utils/expoPush.ts) needs to deliver through Expo's HTTP API. One
+// user can have both a web subscription and a mobile token (or several
+// of either, e.g. two browsers or two phones); notifyUser sends to every
+// row in both tables.
+model ExpoPushToken {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  token     String   @unique
   createdAt DateTime @default(now())
 }
 
@@ -555,6 +575,51 @@ model LiveClass {
   createdAt    DateTime  @default(now())
 
   attendances LiveClassAttendance[]
+  recordings  LiveClassRecording[]
+}
+
+// A recording spans the exact lifetime of one Egress job on the LiveKit
+// server, not one LiveClass -- a single class could in principle be
+// recorded, stopped, and recorded again, so this is a one-to-many on
+// liveClassId rather than a single nullable column on LiveClass itself.
+// fileKey/fileSizeBytes/durationSeconds all start null and are filled in
+// by the ONE place that ever writes them: the LiveKit `egress_ended`
+// webhook handler in Kwegereza-LiveClass, relayed here over the same
+// internal API every other cross-service write already uses. That
+// webhook fires from LiveKit's OWN infrastructure once the egress job
+// is actually done, independent of whether the LiveClass service or
+// this server were still running at that exact moment -- which is
+// what makes "the host stopped the class abruptly" safe: the egress
+// job itself keeps running until LiveKit decides the room is gone, and
+// the webhook still arrives after that, updating this same row.
+model LiveClassRecording {
+  id          String    @id @default(uuid())
+  liveClassId String
+  liveClass   LiveClass @relation(fields: [liveClassId], references: [id])
+
+  egressId String @unique
+  roomName String
+
+  // STARTING | ACTIVE | ENDING | COMPLETE | FAILED -- mirrors LiveKit's
+  // own EgressStatus names so a status mismatch is never a translation
+  // bug between the two systems, just a direct copy.
+  status String @default("STARTING")
+
+  // The S3(-compatible) object key once the file upload completes --
+  // never a public URL. A presigned GET URL is generated fresh on every
+  // download request (see recordingController.ts) rather than stored,
+  // so a leaked/old link can't still work months later.
+  fileKey         String?
+  fileSizeBytes   BigInt?
+  durationSeconds Int?
+
+  startedByUserId String
+  startedByUser   User      @relation(fields: [startedByUserId], references: [id])
+  startedAt       DateTime  @default(now())
+  endedAt         DateTime?
+  createdAt       DateTime  @default(now())
+
+  @@index([liveClassId])
 }
 
 model LiveClassAttendance {
@@ -619,8 +684,122 @@ model Message {
   clientMessageId String
 
   body      String
-  deletedAt DateTime? // soft delete
+  deletedAt DateTime? // soft delete == "delete for everyone"; see MessageDeletion for "delete for me"
   createdAt DateTime  @default(now())
 
+  // Editing is intentionally time-boxed: the frontend only offers the
+  // edit action within 10 minutes of createdAt, and this is re-checked
+  // server-side on every edit attempt rather than trusted from the
+  // client. editedAt itself just marks "this body isn't the original
+  // one anymore" for the "edited" label -- the original body is not
+  // kept, same as the website has never kept edit history anywhere else.
+  editedAt DateTime?
+
+  // Null for an ordinary message. Set when this message was created via
+  // the forward action rather than typed -- forwarding always creates a
+  // genuinely new Message row (new id, new conversation, new
+  // createdAt), it never moves or re-parents the original.
+  isForwarded Boolean @default(false)
+
+  // One message is either text, an attachment, or both (e.g. a photo
+  // with a caption) -- body stays required at the DB level (existing
+  // column), so an attachment-only message stores body as an empty
+  // string rather than this needing its own nullable-body migration.
+  // attachmentType is "IMAGE" | "DOCUMENT", matching exactly which of
+  // the two upload endpoints in chatController.ts produced the URL.
+  attachmentUrl  String?
+  attachmentType String?
+  attachmentName String?
+  // In bytes, taken from multer's own file.size at upload time (never
+  // trusted from the client) -- purely a display value (file-size text
+  // next to a document/video/audio attachment), nothing reads it back
+  // for validation, so there was no reason to add a second source of
+  // truth for it.
+  attachmentSize Int?
+  // True only for a message sent through the composer's mic-record
+  // flow, never for an ordinary audio FILE picked via the attachment
+  // menu's "Ijwi" option -- both produce attachmentType "AUDIO" with
+  // the same storage category, but they render differently (a compact
+  // waveform playback card for a voice note vs. a plain player showing
+  // the real filename for a shared audio file), so the frontend needs
+  // a way to tell which is which beyond attachmentType alone.
+  isVoiceNote Boolean @default(false)
+  // Client-generated (one UUID per batch of files picked together in a
+  // single gallery/video selection), never server-generated -- its ONLY
+  // purpose is letting the frontend recognize "these N messages were
+  // one attachment batch" and render them as one WhatsApp-style grid
+  // tile instead of N separate bubbles. Null for an ordinary single
+  // message. Deliberately not a foreign key to anything; it's a display
+  // hint, not a relationship the database needs to enforce.
+  groupId String?
+
+  // Self-relation for replies. Deliberately nullable with no onDelete
+  // cascade semantics beyond Prisma's default (restrict) -- if the
+  // original is later deleted-for-everyone, replyTo still resolves (the
+  // row isn't gone, just deletedAt-marked), so the quoted preview can
+  // still render "this message was deleted" rather than orphaning the
+  // reply.
+  replyToId String?
+  replyTo   Message?  @relation("MessageReplies", fields: [replyToId], references: [id])
+  replies   Message[] @relation("MessageReplies")
+
+  deletions MessageDeletion[]
+
   @@unique([senderId, clientMessageId])
+}
+
+// "Delete for me" -- one row per (message, user) hides that message from
+// that one user's own message list without touching anyone else's view
+// or the message itself. Deliberately a separate table rather than a
+// column on Message: unlike deletedAt (which is global, "delete for
+// everyone"), this can be true for several different users independently
+// of each other and of the sender.
+model MessageDeletion {
+  id        String   @id @default(uuid())
+  messageId String
+  message   Message  @relation(fields: [messageId], references: [id])
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  deletedAt DateTime @default(now())
+
+  @@unique([messageId, userId])
+}
+
+// One row per user; created lazily on first write (see
+// chatSettingsController.ts), same pattern as NotificationPreference.
+// themeId is a named preset (bubble colors + background), not raw CSS --
+// keeps every user's chat rendering one of a small, designed set rather
+// than arbitrary color values nobody tested together. wallpaper is a
+// separate, optional layer on top of whichever theme is chosen.
+model ChatSettings {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id])
+  themeId   String   @default("default")
+  // A BUILT-IN preset key (see chatThemes.js's CHAT_WALLPAPERS) when the
+  // user picked one of those; left as-is (and ignored) once a custom
+  // image is chosen below, so switching back just means clearing
+  // wallpaperImageUrl rather than needing two mutually-exclusive fields
+  // to stay in sync.
+  wallpaper String?
+  // A user-uploaded image used as wallpaper instead of a built-in
+  // preset. scale/offsetX/offsetY capture exactly how they pinch-zoomed
+  // and panned it in the picker (see WallpaperCropper.jsx) -- stored as
+  // plain numbers rather than a pre-rendered cropped image so the full
+  // original stays available if they ever want to reposition it again.
+  wallpaperImageUrl String?
+  wallpaperScale    Float?
+  wallpaperOffsetX  Float?
+  wallpaperOffsetY  Float?
+  // The ORIGINAL image's own pixel dimensions, not the cropper preview
+  // frame's -- needed so the exact crop the user chose can be
+  // reproduced precisely against the chat panel's REAL size, which is
+  // a completely different shape (wide on desktop, tall on mobile)
+  // than the picker's fixed preview frame. Without these, offsetX/Y
+  // and scale alone can only be approximated on a container whose
+  // aspect ratio happens to match the picker's, not reproduced exactly
+  // on an arbitrary one.
+  wallpaperNaturalWidth  Int?
+  wallpaperNaturalHeight Int?
+  updatedAt              DateTime @updatedAt
 }

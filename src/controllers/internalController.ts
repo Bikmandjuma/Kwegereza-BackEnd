@@ -167,6 +167,51 @@ export const deleteLiveClassInternal = asyncHandler(async (req: Request, res: Re
   }
 });
 
+/** Called by Kwegereza-LiveClass the moment a host starts recording --
+ * egressId is already known at that point (LiveKit returns it
+ * synchronously from startRoomCompositeEgress), well before the file
+ * itself exists. This row is what makes "list recordings" show
+ * something immediately (status STARTING/ACTIVE) rather than only once
+ * the file is actually ready. */
+export const createRecordingInternal = asyncHandler(async (req: Request, res: Response) => {
+  const { liveClassId, egressId, roomName, startedByUserId } = req.body ?? {};
+  if (!liveClassId || !egressId || !roomName || !startedByUserId) {
+    sendError(res, 422, "liveClassId, egressId, roomName, na startedByUserId birakenewe.");
+    return;
+  }
+  const created = await prisma.liveClassRecording.create({
+    data: { liveClassId, egressId, roomName, startedByUserId, status: "ACTIVE" },
+  });
+  sendResponse(res, 201, created);
+});
+
+/** Called from two places in Kwegereza-LiveClass: once when the host
+ * explicitly stops recording (status -> ENDING), and again from the
+ * `egress_ended` webhook handler once LiveKit reports the file is
+ * actually written (status -> COMPLETE/FAILED, plus the file's real
+ * key/size/duration) -- the webhook call is the one that matters for
+ * "stopped abruptly", since it fires from LiveKit's own side whether or
+ * not anything of ours was still running to request it. Looked up by
+ * egressId rather than this table's own id since that's the only
+ * identifier LiveKit's webhook payload itself carries. */
+export const updateRecordingInternal = asyncHandler(async (req: Request, res: Response) => {
+  const { egressId } = req.params;
+  const { status, fileKey, fileSizeBytes, durationSeconds, endedAt } = req.body ?? {};
+  const data: any = {};
+  if (status !== undefined) data.status = status;
+  if (fileKey !== undefined) data.fileKey = fileKey;
+  if (fileSizeBytes !== undefined) data.fileSizeBytes = BigInt(fileSizeBytes);
+  if (durationSeconds !== undefined) data.durationSeconds = durationSeconds;
+  if (endedAt !== undefined) data.endedAt = endedAt ? new Date(endedAt) : null;
+
+  try {
+    const updated = await prisma.liveClassRecording.update({ where: { egressId }, data });
+    sendResponse(res, 200, { ...updated, fileSizeBytes: updated.fileSizeBytes?.toString() ?? null });
+  } catch {
+    sendError(res, 404, "Iyi egress ntiboneka.");
+  }
+});
+
 export const createAttendanceInternal = asyncHandler(async (req: Request, res: Response) => {
   const { liveClassId, userId } = req.body ?? {};
   if (!liveClassId || !userId) {

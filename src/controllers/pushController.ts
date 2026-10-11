@@ -51,3 +51,33 @@ export const getSubscriptionStatus = asyncHandler(async (req: Request, res: Resp
   const count = await prisma.pushSubscription.count({ where: { userId: req.user!.id } });
   sendResponse(res, 200, { subscribed: count > 0, deviceCount: count });
 });
+
+/** The mobile app's equivalent of subscribe() above -- one opaque Expo
+ * push token per installed app instance, instead of a browser's
+ * endpoint/keys triple. Same upsert-by-token reasoning: a token can
+ * legitimately get re-registered (app reinstall, Expo occasionally
+ * rotating tokens), and that should update the existing row rather
+ * than create a duplicate. */
+export const registerExpoToken = asyncHandler(async (req: Request, res: Response) => {
+  const { token } = req.body ?? {};
+  if (!token || typeof token !== "string") {
+    sendError(res, 422, "Uzuza token.");
+    return;
+  }
+  await prisma.expoPushToken.upsert({
+    where: { token },
+    update: { userId: req.user!.id },
+    create: { userId: req.user!.id, token },
+  });
+  sendResponse(res, 200, null, "Ubutumwa bwa push bwemejwe kuri iyi porogaramu.");
+});
+
+export const unregisterExpoToken = asyncHandler(async (req: Request, res: Response) => {
+  const { token } = req.body ?? {};
+  if (!token) {
+    sendError(res, 422, "Uzuza token.");
+    return;
+  }
+  await prisma.expoPushToken.deleteMany({ where: { token, userId: req.user!.id } });
+  sendResponse(res, 200, null, "Push notifications zahagaritswe kuri iyi porogaramu.");
+});

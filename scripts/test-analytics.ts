@@ -6,7 +6,7 @@
  *
  * Run with: npx tsx scripts/test-analytics.ts   (server must be running)
  */
-const API = "https://api.kwegereza.org/";
+const API = "http://localhost:4000/";
 
 async function login(email: string, password: string) {
   const res = await fetch(`${API}/api/auth/login`, {

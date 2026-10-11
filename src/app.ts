@@ -22,6 +22,7 @@ import guestChatRoutes from "./routes/guestChatRoutes.js";
 import internalRoutes from "./routes/internalRoutes.js";
 import notificationRoutes from "./routes/notificationRoutes.js";
 import publicStatsRoutes from "./routes/publicStatsRoutes.js";
+import recordingRoutes from "./routes/recordingRoutes.js";
 import pushRoutes from "./routes/pushRoutes.js";
 import searchRoutes from "./routes/searchRoutes.js";
 import studentRoutes from "./routes/studentRoutes.js";
@@ -51,7 +52,7 @@ export function createApp() {
   );
   app.use(
     cors({
-      origin: process.env.CORS_ORIGIN ?? "https://kwegereza.org", //add frontend url
+      origin: process.env.CORS_ORIGIN ?? "http://localhost:5173", //add frontend url
       credentials: true,
       // Needed specifically for pdf.js's cross-origin Range-request
       // negotiation (see mozilla/pdf.js#4530 and mozilla/pdf.js#10159):
@@ -104,6 +105,7 @@ export function createApp() {
   app.use("/api/admin", adminRoutes);
   app.use("/api/users", userRoutes);
   app.use("/api/chat", chatRoutes);
+  app.use("/api/recordings", recordingRoutes);
   app.use("/api/ifaida", ifaidaRoutes);
   app.use("/api/photo-insights", photoInsightRoutes);
   app.use("/api/guest-chat", guestChatRoutes);

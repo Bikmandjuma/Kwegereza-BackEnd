@@ -19,7 +19,7 @@ npm install
 cp .env.example .env     # fill in every value -- see the comments in that file
 npx prisma generate
 npx prisma migrate deploy   # applies every migration in prisma/migrations/
-npm run dev                  # https://api.kwegereza.org
+npm run dev                  # http://localhost:4000
 ```
 
 There is no seed script in this repo as of this README; create your first

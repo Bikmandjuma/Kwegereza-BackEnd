@@ -34,11 +34,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 export const UPLOADS_DIR = path.join(__dirname, "..", "..", "uploads");
 
-for (const sub of ["images", "audio", "documents", "videos"]) {
+for (const sub of ["images", "audio", "documents", "videos", "chatVideos", "chatDocuments", "voiceNotes"]) {
   fs.mkdirSync(path.join(UPLOADS_DIR, sub), { recursive: true });
 }
 
-type Category = "images" | "audio" | "documents" | "videos";
+type Category = "images" | "audio" | "documents" | "videos" | "chatVideos" | "chatDocuments" | "voiceNotes";
 
 const ALLOWED: Record<Category, { mime: RegExp; ext: string[]; maxBytes: number }> = {
   images: { mime: /^image\/(jpeg|png|webp)$/, ext: [".jpg", ".jpeg", ".png", ".webp"], maxBytes: 5 * 1024 * 1024 },
@@ -50,6 +50,38 @@ const ALLOWED: Record<Category, { mime: RegExp; ext: string[]; maxBytes: number 
   // recording of a multi-hour exam; if real usage runs longer or disk
   // fills up faster than expected, this is the one number to revisit.
   videos: { mime: /^video\/webm$/, ext: [".webm"], maxBytes: 500 * 1024 * 1024 },
+  // A separate category from "videos" on purpose -- that one is
+  // deliberately webm-only because it exists for exam proctoring
+  // recordings, which the browser's own MediaRecorder always produces
+  // as webm, and narrowing it to exactly that format is itself part of
+  // what makes that validation meaningful. An ordinary phone video
+  // attached to a chat message is far more likely to be mp4 (iOS/
+  // Android's native camera format) or mov, so widening the proctoring
+  // category instead of adding this one would have meant either
+  // rejecting most real phone videos in chat, or loosening a validation
+  // that has nothing to do with chat at all.
+  chatVideos: { mime: /^video\/(mp4|quicktime|webm)$/, ext: [".mp4", ".mov", ".webm"], maxBytes: 50 * 1024 * 1024 },
+  // "documents" above is PDF-only on purpose (the library/books feature
+  // depends on every row there actually being a PDF). Chat needs a
+  // broader, genuinely different set -- Word, Excel, and plain text --
+  // so this is its own category rather than loosening the books one.
+  chatDocuments: {
+    mime: /^(application\/pdf|application\/msword|application\/vnd\.openxmlformats-officedocument\.(wordprocessingml\.document|spreadsheetml\.sheet)|application\/vnd\.ms-excel|text\/plain)$/,
+    ext: [".pdf", ".doc", ".docx", ".xls", ".xlsx", ".txt"],
+    maxBytes: 40 * 1024 * 1024,
+  },
+  // Deliberately separate from "audio" above, which is for ordinary
+  // shared audio FILES (mp3/wav/m4a/aac -- formats a person's own
+  // device already produced). A recorded voice note is a completely
+  // different thing: MediaRecorder itself produces audio/webm in
+  // Chrome and Firefox, or audio/mp4 in Safari -- neither of which
+  // "audio" accepts -- so routing voice notes through that category
+  // was rejecting basically every real recording, not an edge case.
+  voiceNotes: {
+    mime: /^audio\/(webm|ogg|mp4|x-m4a)$/,
+    ext: [".webm", ".ogg", ".m4a", ".mp4"],
+    maxBytes: 25 * 1024 * 1024,
+  },
 };
 
 // Real magic-byte sniffing a renamed .exe with a .pdf extension and a
@@ -69,6 +101,36 @@ const SIGNATURES: Record<Category, (buf: Buffer) => boolean> = {
   // WebM/Matroska's own EBML container signature -- the same check any
   // real media tool (ffprobe, etc.) uses to recognize the format.
   videos: (buf) => buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3,
+  // mp4/mov both use the ISO base media file container (the "ftyp" box
+  // signature, same check already used for m4a audio above); webm uses
+  // the same EBML signature as the "videos" category's own check.
+  chatVideos: (buf) =>
+    buf.slice(4, 8).toString("ascii") === "ftyp" ||
+    (buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3),
+  // Four real container formats share this one category, each with its
+  // own signature: PDF ("%PDF-"), the legacy OLE format .doc/.xls both
+  // use (the same 8-byte magic for both -- Word and Excel's old binary
+  // formats are the same container, just different internal streams),
+  // and .docx/.xlsx which are actually zip archives (the "PK\x03\x04"
+  // signature). Plain .txt has no magic bytes at all by definition, so
+  // it's accepted on a narrower, different basis: the first 16 bytes
+  // must be printable ASCII/UTF-8-safe (tab, newline, carriage return,
+  // or printable range) rather than matching a signature -- weaker than
+  // the others, but a text file's entire format IS "no special bytes,"
+  // so there's no stronger check available for it.
+  chatDocuments: (buf) => {
+    if (buf.slice(0, 5).toString("ascii") === "%PDF-") return true;
+    if (buf[0] === 0x50 && buf[1] === 0x4b && buf[2] === 0x03 && buf[3] === 0x04) return true;
+    if (buf[0] === 0xd0 && buf[1] === 0xcf && buf[2] === 0x11 && buf[3] === 0xe0) return true;
+    return [...buf].every((b) => b === 9 || b === 10 || b === 13 || (b >= 32 && b <= 126) || b >= 128);
+  },
+  // Same two signatures as chatVideos' webm/mp4 check -- audio-only
+  // webm and audio-only mp4 (Safari's .m4a) use the exact same two
+  // container formats as their video counterparts, just with no video
+  // track inside, so there's nothing audio-specific to check for here.
+  voiceNotes: (buf) =>
+    (buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) ||
+    buf.slice(4, 8).toString("ascii") === "ftyp",
 };
 
 function makeStorage(category: Category) {
