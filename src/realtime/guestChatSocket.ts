@@ -28,6 +28,7 @@ export function initGuestChatSocket(io: Server) {
         return next(new Error("unauthenticated"));
       }
       socket.data.conversationId = conversationId;
+      socket.data.guestGender = conversation.guestGender;
       next();
     } catch {
       next(new Error("unauthenticated"));
@@ -36,15 +37,16 @@ export function initGuestChatSocket(io: Server) {
 
   nsp.on("connection", (socket) => {
     const conversationId: string = socket.data.conversationId;
+    const staffRoom = `guest-chat-staff:${socket.data.guestGender}`; // same per-gender rooms as socket.ts's guestchat:join-staff
     socket.join(`conv:${conversationId}`);
 
     socket.on("typing:start", () => {
       socket.to(`conv:${conversationId}`).emit("guestchat:typing", { conversationId, who: "GUEST" });
-      io.to("guest-chat-staff").emit("guestchat:typing", { conversationId, who: "GUEST" });
+      io.to(staffRoom).emit("guestchat:typing", { conversationId, who: "GUEST" });
     });
     socket.on("typing:stop", () => {
       socket.to(`conv:${conversationId}`).emit("guestchat:stopped-typing", { conversationId, who: "GUEST" });
-      io.to("guest-chat-staff").emit("guestchat:stopped-typing", { conversationId, who: "GUEST" });
+      io.to(staffRoom).emit("guestchat:stopped-typing", { conversationId, who: "GUEST" });
     });
   });
 

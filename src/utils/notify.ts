@@ -2,6 +2,8 @@ import { prisma } from "./prisma.js";
 import { sendPushToUser } from "./webPush.js";
 import { sendExpoPushToUser } from "./expoPush.js";
 import { getIo } from "../realtime/ioInstance.js";
+import { hasPermission, isAdminTier } from "./permissions.js";
+import { isOutOfGenderScope } from "./genderScope.js";
 
 // The configurable categories a user can silence from Notification Center
 // preferences. ACCOUNT and SYSTEM notification types are NOT in this map on
@@ -116,6 +118,32 @@ export async function notifyUser(input: NotifyInput): Promise<{ created: boolean
   }
 
   return { created };
+}
+
+/**
+ * Every ACTIVE staff member (non-STUDENT) who both holds `permission`
+ * and is in gender-scope for `gender` -- the exact same two-part rule
+ * this app already applies at the REST layer for guest chat
+ * (isOutOfGenderScope) and that a gender-scoped supervisor's own
+ * student-approval screen filters by: admin-tier or a staff member with
+ * no gender recorded sees everyone regardless of `gender`; everyone
+ * else only sees/handles their own. Used wherever "notify whichever
+ * staff can actually act on this" needs to be gender-aware -- a new
+ * registration pending approval, a guest's message needing a reply --
+ * so that rule lives in exactly one place rather than being
+ * reimplemented at each call site.
+ */
+export async function findEligibleStaff(
+  permission: string,
+  gender: string | null
+): Promise<Array<{ id: string; role: string; permissions: string }>> {
+  const candidates = await prisma.user.findMany({
+    where: { status: "ACTIVE", role: { not: "STUDENT" } },
+    select: { id: true, role: true, permissions: true, gender: true },
+  });
+  return candidates.filter(
+    (u) => (isAdminTier(u.role) || hasPermission(u.role, u.permissions, permission)) && !isOutOfGenderScope(u, { gender })
+  );
 }
 
 /**

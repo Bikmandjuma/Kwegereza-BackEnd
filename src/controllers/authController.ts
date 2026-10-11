@@ -8,6 +8,7 @@ import { endOpenSessions, startSession, trackEvent } from "../utils/activity.js"
 import { parsePermissionsSafely } from "../utils/permissionCatalog.js";
 import { verifyGoogleIdToken } from "../utils/googleAuth.js";
 import { deleteUploadedFile, publicUrlFor, verifySignatureOrThrow } from "../utils/storage.js";
+import { findEligibleStaff, notifyUser } from "../utils/notify.js";
 
 const STATUS_MESSAGES: Record<string, string> = {
   PENDING: "Konti yawe iri gutegereza kwemezwa n'ubuyobozi.",
@@ -63,6 +64,42 @@ const QURAN_READING_TO_LEVEL: Record<string, string> = {
   TRYING: "LEVEL_2", // "Ngerageza gusoma" learning to read
   NONE: "LEVEL_3", // "Ntabyo nzi" doesn't know yet
 };
+
+/**
+ * Fired once a new student registration is actually created (PENDING),
+ * from either path this app creates one (a plain registration, or a
+ * brand-new Google signup -- never a Google login/link to an existing
+ * account, which isn't a new registration at all). Reaches every
+ * admin-tier user (SUPER_ADMIN/ADMIN, who can approve anyone) plus
+ * whichever gender-scoped supervisor matches THIS student's own gender
+ * -- a male registrant's notification reaches the male-side
+ * supervisor(s) (student.approve permission + gender MALE, e.g. the
+ * seeded Men-Leader role or any LEADER whose own gender is MALE), a
+ * female registrant's reaches the female side -- via the same
+ * findEligibleStaff rule guest chat already uses for exactly this
+ * "which staff can actually act on this" question, so admin-tier
+ * inclusion and the gender rule itself stay defined in one place.
+ * Deliberately uncategorized (no "account."/etc. notification-type
+ * prefix that would make it configurable) -- same reasoning as
+ * guestchat.unanswered in guestChatController.ts: a pending approval
+ * sitting unseen isn't something a supervisor should be able to
+ * silence via notification preferences.
+ */
+async function notifyStaffOfNewRegistration(user: { id: string; fullName: string; gender: string | null }) {
+  const eligible = await findEligibleStaff("student.approve", user.gender);
+  await Promise.all(
+    eligible.map((u) =>
+      notifyUser({
+        userId: u.id,
+        type: "registration.pending",
+        title: "Umunyeshuri mushya yiyandikishije",
+        body: `${user.fullName} yiyandikishije, ategereza kwemezwa.`,
+        url: "/leader/abanyeshuri",
+        eventKey: `new-registration-${user.id}-${u.id}`,
+      })
+    )
+  );
+}
 
 export const register = asyncHandler(async (req: Request, res: Response) => {
   const {
@@ -130,6 +167,10 @@ export const register = asyncHandler(async (req: Request, res: Response) => {
       status: "PENDING",
     },
   });
+
+  // Best-effort: a slow/failed notification dispatch must never hold up
+  // or fail the registration itself.
+  notifyStaffOfNewRegistration(user).catch((err) => console.error("[authController] notifyStaffOfNewRegistration failed:", err));
 
   // Registration NEVER grants an active session status is PENDING until a
   // leader/admin approves. The frontend routes PENDING users to a waiting screen.
@@ -264,6 +305,15 @@ export const googleAuth = asyncHandler(async (req: Request, res: Response) => {
           availableHours: availableHours?.trim() ? String(availableHours).trim() : null,
         },
       });
+      // Only this branch is a genuinely NEW registration -- the
+      // existingByEmail branch above just links Google to an account
+      // that already went through (and already notified staff about)
+      // registration once before. Best-effort, same reasoning as the
+      // plain register() call site: must never hold up or fail the
+      // signup itself.
+      notifyStaffOfNewRegistration(user).catch((err) =>
+        console.error("[authController] notifyStaffOfNewRegistration failed:", err)
+      );
     }
   }
 

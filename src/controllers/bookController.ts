@@ -1,4 +1,5 @@
 import type { Request, Response } from "express";
+import crypto from "node:crypto";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { sendError, sendResponse } from "../utils/apiResponse.js";
 import { prisma } from "../utils/prisma.js";
@@ -9,6 +10,7 @@ import { writeAudit } from "../utils/auditLog.js";
 function publicBook(b: any) {
   return {
     id: b.id,
+    slug: b.slug,
     title: b.title,
     description: b.description,
     author: b.author,
@@ -25,6 +27,42 @@ function publicBook(b: any) {
     createdByName: b.createdBy?.fullName,
     playlistId: b.playlistId,
   };
+}
+
+// base36 (0-9, a-z) rather than base64/hex -- lowercase-and-digits-only
+// reads cleanly in a URL with no case-sensitivity surprises or
+// percent-encoding to worry about, matching the dashless, lowercase
+// style of the example in the spec ("ndau23ibscad"). One output
+// character per random byte (via modulo into a fixed 36-symbol
+// alphabet), deliberately NOT converting each byte to a variable-width
+// base36 number and concatenating -- that approach can produce a
+// shorter-than-expected string (some byte values convert to a single
+// base36 digit, others to two), which both under-delivers on length in
+// rare cases and makes the actual amount of randomness per output
+// character inconsistent. This version always returns exactly 12
+// characters, each independently random, 36^12 (~4.7×10^18) possible
+// values -- far more than enough that guessing another book's slug by
+// brute force isn't practical, while generateUniqueBookSlug below still
+// re-rolls on the (astronomically unlikely) event of a genuine
+// collision rather than trusting randomness alone.
+const SLUG_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz";
+function randomSlug(length = 12): string {
+  const bytes = crypto.randomBytes(length);
+  let out = "";
+  for (let i = 0; i < length; i++) out += SLUG_ALPHABET[bytes[i] % SLUG_ALPHABET.length];
+  return out;
+}
+
+async function generateUniqueBookSlug(): Promise<string> {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const candidate = randomSlug();
+    const existing = await prisma.book.findUnique({ where: { slug: candidate }, select: { id: true } });
+    if (!existing) return candidate;
+  }
+  // Astronomically unlikely to ever be reached (five consecutive
+  // collisions out of a keyspace this size), but failing loudly here
+  // beats silently saving a book with no usable slug.
+  throw new Error("Ntibyashobotse gukora slug nshya y'iki gitabo (gerageza nanone).");
 }
 
 export const listPublished = asyncHandler(async (req: Request, res: Response) => {
@@ -80,6 +118,51 @@ export const listPublished = asyncHandler(async (req: Request, res: Response) =>
     perPage,
     totalPages: Math.ceil(total / perPage) || 1,
   });
+});
+
+/** Resolves a book's public, shareable slug to the full book -- the
+ * backing endpoint for the dedicated reader page's URL
+ * (/isomero/ibitabo/:slug). Applies the EXACT same visibility and
+ * locking rules as listPublished: a DRAFT or otherwise unpublished book
+ * is reported as not found (not as "exists but forbidden" -- a slug
+ * for a book that isn't public shouldn't confirm that book exists at
+ * all), and an anonymous caller still gets the file locked unless this
+ * happens to be one of the first-3-ever-published free books, same as
+ * the listing page. A guessed or stale slug and a genuinely deleted
+ * book produce the identical 404, by design. */
+export const getBookBySlug = asyncHandler(async (req: Request, res: Response) => {
+  const { slug } = req.params;
+  const book = await prisma.book.findUnique({ where: { slug }, include: { createdBy: true } });
+  if (!book || book.status !== "PUBLISHED") {
+    sendError(res, 404, "Iki gitabo ntikiboneka cyangwa cyasibwe.");
+    return;
+  }
+
+  // Distinct logged-in viewers, from the existing BookActivityEvent log
+  // -- only computed here, on the single-book detail lookup, not on
+  // listPublished's listing query. Doing this per-book on a list of
+  // dozens of books would be an N+1 extra query per card; here it's
+  // exactly one additional query for the one book someone is actually
+  // reading right now.
+  const uniqueViewerRows = await prisma.bookActivityEvent.findMany({
+    where: { bookId: book.id, type: "VIEW" },
+    distinct: ["userId"],
+    select: { userId: true },
+  });
+
+  const base = { ...publicBook(book), uniqueViews: uniqueViewerRows.length };
+  if (req.user) {
+    sendResponse(res, 200, { ...base, locked: false });
+    return;
+  }
+  const freeBooks = await prisma.book.findMany({
+    where: { status: "PUBLISHED" },
+    orderBy: { publishedAt: "asc" },
+    take: 3,
+    select: { id: true },
+  });
+  const isFree = freeBooks.some((b) => b.id === book.id);
+  sendResponse(res, 200, isFree ? { ...base, locked: false } : { ...base, locked: true, fileUrl: null });
 });
 
 export const trackDownload = asyncHandler(async (req: Request, res: Response) => {
@@ -244,8 +327,10 @@ export const createBook = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
+  const slug = await generateUniqueBookSlug();
   const book = await prisma.book.create({
     data: {
+      slug,
       title: title.trim(),
       description: description ? String(description) : "",
       author: author ? String(author) : "",

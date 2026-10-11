@@ -35,15 +35,6 @@ ALTER TABLE `Message`
     ADD COLUMN `groupId` VARCHAR(191) NULL,
     ADD COLUMN `isVoiceNote` BOOLEAN NOT NULL DEFAULT false;
 
--- AlterTable: ChatSettings gets custom wallpaper image support
-ALTER TABLE `ChatSettings`
-    ADD COLUMN `wallpaperImageUrl` VARCHAR(191) NULL,
-    ADD COLUMN `wallpaperScale` DOUBLE NULL,
-    ADD COLUMN `wallpaperOffsetX` DOUBLE NULL,
-    ADD COLUMN `wallpaperOffsetY` DOUBLE NULL,
-    ADD COLUMN `wallpaperNaturalWidth` INT NULL,
-    ADD COLUMN `wallpaperNaturalHeight` INT NULL;
-
 -- AddForeignKey
 ALTER TABLE `Message` ADD CONSTRAINT `Message_replyToId_fkey` FOREIGN KEY (`replyToId`) REFERENCES `Message`(`id`) ON DELETE SET NULL ON UPDATE CASCADE;
 
@@ -62,7 +53,15 @@ CREATE TABLE `MessageDeletion` (
 ALTER TABLE `MessageDeletion` ADD CONSTRAINT `MessageDeletion_messageId_fkey` FOREIGN KEY (`messageId`) REFERENCES `Message`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
 ALTER TABLE `MessageDeletion` ADD CONSTRAINT `MessageDeletion_userId_fkey` FOREIGN KEY (`userId`) REFERENCES `User`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
 
--- CreateTable
+-- CreateTable: ChatSettings must exist BEFORE the ALTER TABLE below that
+-- adds its custom-wallpaper columns -- this table creation and that
+-- column addition were written as if ChatSettings already existed from
+-- an earlier migration, when this is actually the migration that
+-- creates it. That ordering mistake is the exact reason this migration
+-- has been failing (error: "Table 'ChatSettings' doesn't exist") on
+-- every attempt since it was first written, including a verified test
+-- against a brand-new database -- not a one-off issue with any
+-- particular database's prior state.
 CREATE TABLE `ChatSettings` (
     `id` VARCHAR(191) NOT NULL,
     `userId` VARCHAR(191) NOT NULL,
@@ -76,3 +75,13 @@ CREATE TABLE `ChatSettings` (
 
 -- AddForeignKey
 ALTER TABLE `ChatSettings` ADD CONSTRAINT `ChatSettings_userId_fkey` FOREIGN KEY (`userId`) REFERENCES `User`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AlterTable: ChatSettings gets custom wallpaper image support (now
+-- correctly AFTER the table exists)
+ALTER TABLE `ChatSettings`
+    ADD COLUMN `wallpaperImageUrl` VARCHAR(191) NULL,
+    ADD COLUMN `wallpaperScale` DOUBLE NULL,
+    ADD COLUMN `wallpaperOffsetX` DOUBLE NULL,
+    ADD COLUMN `wallpaperOffsetY` DOUBLE NULL,
+    ADD COLUMN `wallpaperNaturalWidth` INT NULL,
+    ADD COLUMN `wallpaperNaturalHeight` INT NULL;

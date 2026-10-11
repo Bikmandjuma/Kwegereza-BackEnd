@@ -2,6 +2,7 @@ import { Router } from "express";
 import {
   createBook,
   deleteBook,
+  getBookBySlug,
   listAdmin,
   listPublished,
   listReaders,
@@ -17,6 +18,7 @@ const router = Router();
 const upload = makeMultiFieldUploader({ file: "documents", coverImage: "images" });
 
 router.get("/published", optionalAuthenticate, listPublished);
+router.get("/by-slug/:slug", optionalAuthenticate, getBookBySlug);
 // optionalAuthenticate, not authenticate: anonymous view/download/share
 // must keep working, but a logged-in caller's identity is what backs the
 // per-user "who read this" list below.

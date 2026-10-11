@@ -42,6 +42,13 @@ export const PERMISSION_CATALOG: PermissionDef[] = [
 
   { key: "guestchat.respond", category: "Ikiganiro n'Abasuye", label: "Gusubiza abasuye batinjiye" },
 
+  // Its own dedicated permission, deliberately not reused from
+  // dars.*/book.*/ifaida.*/photoinsight.* -- a playlist can hold any
+  // mix of those four content types, so gating it on just one of them
+  // (the old, mistaken design) silently blocked anyone who only had
+  // permission to manage a DIFFERENT type.
+  { key: "playlist.manage", category: "Playlist", label: "Gucunga Playlist (kongeramo, guhindura, gusiba)" },
+
   { key: "book.view", category: "Ibitabo", label: "Kureba ibitabo" },
   { key: "book.create", category: "Ibitabo", label: "Kongeramo igitabo" },
   { key: "book.update", category: "Ibitabo", label: "Guhindura igitabo" },

@@ -5,9 +5,9 @@ import { sendError, sendResponse } from "../utils/apiResponse.js";
 import { prisma } from "../utils/prisma.js";
 import { getIo } from "../realtime/ioInstance.js";
 import { isOutOfGenderScope } from "../utils/genderScope.js";
-import { hasPermission, isAdminTier } from "../utils/permissions.js";
+import { isAdminTier } from "../utils/permissions.js";
 import { isUserOnline } from "../realtime/socket.js";
-import { notifyUser } from "../utils/notify.js";
+import { findEligibleStaff, notifyUser } from "../utils/notify.js";
 
 const VALID_GENDERS = new Set(["MALE", "FEMALE"]);
 
@@ -27,16 +27,7 @@ const VALID_GENDERS = new Set(["MALE", "FEMALE"]);
  * notifications always-on.
  */
 async function alertOfflineEligibleStaff(conversation: { id: string; guestGender: string | null }, messageId: string) {
-  const candidates = await prisma.user.findMany({
-    where: { status: "ACTIVE", role: { not: "STUDENT" } },
-    select: { id: true, role: true, permissions: true, gender: true },
-  });
-
-  const eligible = candidates.filter(
-    (u) =>
-      (isAdminTier(u.role) || hasPermission(u.role, u.permissions, "guestchat.respond")) &&
-      !isOutOfGenderScope(u, { gender: conversation.guestGender })
-  );
+  const eligible = await findEligibleStaff("guestchat.respond", conversation.guestGender);
   if (eligible.length === 0) return;
 
   const anyoneOnline = eligible.some((u) => isUserOnline(u.id));
@@ -87,8 +78,19 @@ function publicConversation(c: any) {
 // server->staff push; the guest side has its own separate namespace
 // (see realtime/guestChatSocket.ts) since a guest has no JWT to satisfy
 // the main namespace's auth middleware.
-function notifyStaff(event: string, payload: any) {
-  getIo()?.to("guest-chat-staff").emit(event, payload);
+// Scoped to the ONE gender room matching this guest (see socket.ts's
+// guestchat:join-staff for who's actually in each room: a gender-scoped
+// leader only their own, admin-tier or no-gender-recorded staff both).
+// Previously this pushed to a single shared "guest-chat-staff" room
+// every connected staff socket got every guest's name and message
+// content in realtime regardless of gender, even though the REST
+// endpoints already refused a gender-scoped leader's attempt to open
+// or reply to an out-of-scope conversation. Targeting the matching room
+// is what actually closes that gap, not just relying on the
+// already-correct REST-level checks.
+function notifyStaff(event: string, payload: any, guestGender: string | null) {
+  if (guestGender !== "MALE" && guestGender !== "FEMALE") return; // malformed/legacy row -- nobody to safely target
+  getIo()?.to(`guest-chat-staff:${guestGender}`).emit(event, payload);
 }
 
 function notifyGuestSocket(conversationId: string, event: string, payload: any) {
@@ -118,7 +120,7 @@ export const startConversation = asyncHandler(async (req: Request, res: Response
     },
   });
 
-  notifyStaff("guestchat:new-conversation", publicConversation(conversation));
+  notifyStaff("guestchat:new-conversation", publicConversation(conversation), conversation.guestGender);
   sendResponse(res, 201, { conversationId: conversation.id, guestToken: conversation.guestToken });
 });
 
@@ -161,7 +163,7 @@ export const guestSendMessage = asyncHandler(async (req: Request, res: Response)
   await prisma.guestConversation.update({ where: { id: conversation.id }, data: { status: "OPEN" } });
 
   const publicMsg = publicMessage(message);
-  notifyStaff("guestchat:new-message", { conversationId: conversation.id, message: publicMsg });
+  notifyStaff("guestchat:new-message", { conversationId: conversation.id, message: publicMsg }, conversation.guestGender);
   // Best-effort: a slow/failed alert must never hold up the guest's own
   // message from being saved and shown back to them.
   alertOfflineEligibleStaff(conversation, message.id).catch((err) =>
@@ -238,7 +240,7 @@ export const staffSendMessage = asyncHandler(async (req: Request, res: Response)
 
   const publicMsg = publicMessage(message);
   notifyGuestSocket(conversation.id, "guestchat:new-message", publicMsg);
-  notifyStaff("guestchat:new-message", { conversationId: conversation.id, message: publicMsg });
+  notifyStaff("guestchat:new-message", { conversationId: conversation.id, message: publicMsg }, conversation.guestGender);
   sendResponse(res, 201, publicMsg);
 });
 

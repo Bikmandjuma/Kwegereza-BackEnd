@@ -15,11 +15,16 @@ router.get("/", listPlaylists);
 router.get("/:id", getPlaylist);
 
 router.use(authenticate);
-// Same permission that lets someone create Dars in the first place a
-// playlist is just an organizing container for Dars, not a separate
-// capability someone would have without also being able to create Dars.
-router.post("/", requirePermission("dars.create"), createPlaylist);
-router.patch("/:id", requirePermission("dars.update"), updatePlaylist);
-router.delete("/:id", requirePermission("dars.delete"), deletePlaylist);
+// Its own dedicated permission (see permissionCatalog.ts) -- NOT
+// dars.create/update/delete. A playlist can just as easily hold books,
+// ifaida posts, or photo insights as Dars, so gating every playlist
+// operation on a Dars-specific permission (the previous design) meant
+// a book-only, ifaida-only, or photo-insight-only leader could never
+// manage a playlist at all, even one made entirely of their own
+// content type. backfillPlaylistPermission.ts is what preserves this
+// for anyone who already had one of the old content permissions.
+router.post("/", requirePermission("playlist.manage"), createPlaylist);
+router.patch("/:id", requirePermission("playlist.manage"), updatePlaylist);
+router.delete("/:id", requirePermission("playlist.manage"), deletePlaylist);
 
 export default router;

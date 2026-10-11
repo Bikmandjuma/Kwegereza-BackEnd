@@ -6,6 +6,7 @@ import { initGuestChatSocket } from "./realtime/guestChatSocket.js";
 import { prisma } from "./utils/prisma.js";
 import { startGenderRoomCleanupSchedule } from "./utils/genderRoomCleanup.js";
 import { startClassReminderSchedule } from "./utils/classReminder.js";
+import { backfillPlaylistManagePermission } from "./utils/backfillPlaylistPermission.js";
 
 const PORT = Number(process.env.PORT) || 4000;
 const HOST = "0.0.0.0";
@@ -24,6 +25,7 @@ async function start() {
 
   startGenderRoomCleanupSchedule();
   startClassReminderSchedule();
+  backfillPlaylistManagePermission().catch((err) => console.error("[server] backfillPlaylistManagePermission failed:", err));
 
   async function shutdown(): Promise<void> {
     await prisma.$disconnect();

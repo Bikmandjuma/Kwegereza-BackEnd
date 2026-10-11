@@ -63,6 +63,7 @@ model User {
   messages          Message[]
   messageDeletions  MessageDeletion[]
   chatSettings      ChatSettings?
+  conversationWallpapers ConversationWallpaper[]
 
   hostedClasses        LiveClass[]
   liveClassAttendances LiveClassAttendance[]
@@ -337,7 +338,18 @@ model Teacher {
 }
 
 model Book {
-  id          String    @id @default(uuid())
+  id   String @id @default(uuid())
+  // A short, random, public-facing identifier for shareable reader URLs
+  // (/isomero/ibitabo/:slug) -- deliberately NOT the row's own uuid
+  // `id`: that's an internal database key, and using it directly as a
+  // public URL is exactly the kind of thing that quietly turns into an
+  // API contract nobody meant to make one (e.g. letting someone enumerate
+  // or guess at sequential/structured ids). Generated once at creation
+  // (see generateBookSlug in bookController.ts), checked for collisions
+  // before saving, and never regenerated afterward -- a slug is a
+  // permanent, stable reference to one specific book for as long as
+  // that book exists.
+  slug        String    @unique
   title       String
   description String    @default("") @db.Text // was VARCHAR(191); a real book description can easily run longer than that
   author      String    @default("")
@@ -650,6 +662,7 @@ model Conversation {
 
   participants ConversationParticipant[]
   messages     Message[]
+  wallpapers   ConversationWallpaper[]
 
   @@unique([kind, genderScope])
 }
@@ -724,6 +737,16 @@ model Message {
   // the real filename for a shared audio file), so the frontend needs
   // a way to tell which is which beyond attachmentType alone.
   isVoiceNote Boolean @default(false)
+  // Seconds, captured from the RECORDING ITSELF client-side (a plain
+  // timer running while MediaRecorder is active), not re-derived from
+  // the uploaded file's own metadata on playback. This matters because
+  // webm files MediaRecorder produces are a well-known case where
+  // browsers report `duration: Infinity` when loading them back via a
+  // plain <audio> element (the container has no proper duration field
+  // written into it) -- storing the real, already-known duration
+  // sidesteps that bug entirely rather than working around it on
+  // every playback.
+  attachmentDuration Int?
   // Client-generated (one UUID per batch of files picked together in a
   // single gallery/video selection), never server-generated -- its ONLY
   // purpose is letting the frontend recognize "these N messages were
@@ -771,11 +794,36 @@ model MessageDeletion {
 // keeps every user's chat rendering one of a small, designed set rather
 // than arbitrary color values nobody tested together. wallpaper is a
 // separate, optional layer on top of whichever theme is chosen.
+// Bubble-color THEME stays a per-user, global preference ("how I like my
+// chats to look everywhere") -- only wallpaper moved to being per-
+// conversation (see ConversationWallpaper below), matching the actual
+// complaint: a background is naturally "this chat's background," the
+// same way WhatsApp itself lets each conversation have its own, while a
+// color theme reasonably stays one setting across every conversation.
 model ChatSettings {
   id        String   @id @default(uuid())
   userId    String   @unique
   user      User     @relation(fields: [userId], references: [id])
   themeId   String   @default("default")
+  updatedAt DateTime @updatedAt
+}
+
+// One row per (user, conversation) -- deliberately NOT per-user-only
+// (that was the original design, and the direct cause of "wallpaper for
+// one conversation changes another": there was only ever one wallpaper
+// row per user, applied everywhere they had a chat open). Scoping to
+// conversationId as well as userId is what makes each conversation's
+// background independent, and is also why this is its own table rather
+// than more columns on ChatSettings -- a user can have many
+// conversations, each with its own wallpaper, which a single row per
+// user could never represent.
+model ConversationWallpaper {
+  id             String       @id @default(uuid())
+  userId         String
+  user           User         @relation(fields: [userId], references: [id])
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+
   // A BUILT-IN preset key (see chatThemes.js's CHAT_WALLPAPERS) when the
   // user picked one of those; left as-is (and ignored) once a custom
   // image is chosen below, so switching back just means clearing
@@ -802,4 +850,6 @@ model ChatSettings {
   wallpaperNaturalWidth  Int?
   wallpaperNaturalHeight Int?
   updatedAt              DateTime @updatedAt
+
+  @@unique([userId, conversationId])
 }

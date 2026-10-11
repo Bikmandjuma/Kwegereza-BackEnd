@@ -5,7 +5,7 @@ import { prisma } from "../utils/prisma.js";
 import { setIo } from "./ioInstance.js";
 import { notifyUser } from "../utils/notify.js";
 import { isCrossGenderBlocked } from "../utils/genderScope.js";
-import { hasPermission } from "../utils/permissions.js";
+import { hasPermission, isAdminTier } from "../utils/permissions.js";
 
 // userId -> set of live socket ids for that user (supports multiple devices/tabs).
 // This is the in-memory presence store. In production this becomes Redis so it
@@ -36,6 +36,7 @@ function publicMessage(m: any) {
     attachmentName: m.attachmentName ?? null,
     attachmentSize: m.attachmentSize ?? null,
     isVoiceNote: Boolean(m.isVoiceNote),
+    attachmentDuration: m.attachmentDuration ?? null,
     groupId: m.groupId ?? null,
     replyTo: m.replyTo
       ? {
@@ -130,7 +131,20 @@ export function initSocket(httpServer: HttpServer) {
         ack?.({ ok: false, error: "Ntushobora kubona ibi biganiro." });
         return;
       }
-      socket.join("guest-chat-staff");
+      // Gender-scoped exactly like every other guest-chat surface in this
+      // file (isOutOfGenderScope, already enforced on the REST reads/
+      // writes): admin-tier or a staff member with no gender recorded
+      // joins BOTH gender rooms (same "sees everything" rule
+      // isOutOfGenderScope already applies), everyone else joins only
+      // their own. This is what the realtime push was missing -- the
+      // REST endpoints already refuse a gender-scoped leader's attempt
+      // to open or reply to an out-of-scope conversation, but this
+      // single shared room still pushed every guest's name and message
+      // content to every connected staff socket regardless of gender,
+      // which is the actual leak this fixes.
+      const joinsBoth = isAdminTier(user.role) || !user.gender;
+      if (joinsBoth || user.gender === "MALE") socket.join("guest-chat-staff:MALE");
+      if (joinsBoth || user.gender === "FEMALE") socket.join("guest-chat-staff:FEMALE");
       ack?.({ ok: true });
     });
 
@@ -163,7 +177,19 @@ export function initSocket(httpServer: HttpServer) {
     socket.on(
       "message:send",
       async (
-        { conversationId, clientMessageId, body, replyToId, attachmentUrl, attachmentType, attachmentName, attachmentSize, groupId, isVoiceNote },
+        {
+          conversationId,
+          clientMessageId,
+          body,
+          replyToId,
+          attachmentUrl,
+          attachmentType,
+          attachmentName,
+          attachmentSize,
+          groupId,
+          isVoiceNote,
+          attachmentDuration,
+        },
         ack
       ) => {
       // A message needs EITHER real text OR an attachment -- never
@@ -228,6 +254,7 @@ export function initSocket(httpServer: HttpServer) {
             attachmentSize: attachmentSize || null,
             groupId: groupId || null,
             isVoiceNote: Boolean(isVoiceNote),
+            attachmentDuration: attachmentDuration != null ? Number(attachmentDuration) : null,
           },
           include: { sender: true, replyTo: { include: { sender: true } } },
         });
@@ -426,6 +453,7 @@ export function initSocket(httpServer: HttpServer) {
               attachmentName: original.attachmentName,
               attachmentSize: original.attachmentSize,
               isVoiceNote: original.isVoiceNote,
+              attachmentDuration: original.attachmentDuration,
             },
             include: { sender: true, replyTo: { include: { sender: true } } },
           });

@@ -80,7 +80,30 @@ export function createApp() {
 
   // Uploaded book files / audio / images dev-tier storage. See utils/storage.ts
   // for what changes when this moves to S3-compatible object storage in production.
-  app.use("/uploads", express.static(UPLOADS_DIR));
+  app.use(
+    "/uploads",
+    express.static(UPLOADS_DIR, {
+      // express.static (via the `send`/`mime` packages) picks
+      // Content-Type purely from file EXTENSION, and .webm's generic
+      // default is "video/webm" -- correct for chatVideos/videos
+      // (genuine video uploads also use .webm), but WRONG for a voice
+      // note, which is audio-only despite sharing the same container
+      // format and extension. Confirmed by actually uploading a real
+      // voice note file and checking the served response: it came back
+      // as video/webm, which different browsers handle inconsistently
+      // through an <audio> element -- some play it, some silently
+      // refuse, which is exactly the kind of hard-to-reproduce
+      // "playback doesn't work" report this was causing. Scoped to the
+      // voiceNotes path specifically, not a global .webm override,
+      // since that would wrongly reclassify real video/webm uploads
+      // elsewhere in /uploads.
+      setHeaders: (res, filePath) => {
+        if (filePath.includes(`${path.sep}voiceNotes${path.sep}`) && filePath.endsWith(".webm")) {
+          res.setHeader("Content-Type", "audio/webm");
+        }
+      },
+    })
+  );
 
   // Reached ONLY when express.static just above did NOT find the
   // requested file (it calls next() rather than erroring) -- logs the
